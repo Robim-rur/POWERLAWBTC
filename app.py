@@ -1,96 +1,100 @@
 import streamlit as st
+import pandas as pd
+import numpy as np
 import asyncio
 import websockets
 import json
-import pandas as pd
-import numpy as np
 import threading
 from datetime import datetime
 
 # ==========================================================
 # CONFIG
 # ==========================================================
-st.set_page_config(page_title="BTC WebSocket Engine", layout="wide")
-st.title("🏦 BTC Real-Time WebSocket Engine (Binance)")
+st.set_page_config(page_title="BTC WebSocket Engine PRO", layout="wide")
+st.title("🏦 BTC Real-Time Engine (Stable Version)")
 
 # ==========================================================
-# STATE STORE (SHARED MEMORY)
+# MEMORY
 # ==========================================================
 if "price_data" not in st.session_state:
     st.session_state.price_data = pd.DataFrame(columns=["time", "price"])
 
-if "last_price" not in st.session_state:
-    st.session_state.last_price = None
+if "buffer_ready" not in st.session_state:
+    st.session_state.buffer_ready = False
 
 # ==========================================================
-# WEBSOCKET THREAD
+# WEBSOCKET
 # ==========================================================
-BINANCE_WS = "wss://stream.binance.com:9443/ws/btcusdt@trade"
+WS = "wss://stream.binance.com:9443/ws/btcusdt@trade"
 
 
-def run_ws():
+def ws_loop():
 
-    async def listen():
+    async def run():
+        async with websockets.connect(WS) as websocket:
 
-        async with websockets.connect(BINANCE_WS) as ws:
             while True:
-                msg = await ws.recv()
+                msg = await websocket.recv()
                 data = json.loads(msg)
 
                 price = float(data["p"])
-                time = datetime.now()
-
-                st.session_state.last_price = price
+                now = datetime.utcnow()
 
                 new_row = pd.DataFrame([{
-                    "time": time,
+                    "time": now,
                     "price": price
                 }])
 
                 st.session_state.price_data = pd.concat(
-                    [st.session_state.price_data, new_row],
+                    [st.session_state.price_data,
+                     new_row],
                     ignore_index=True
-                ).tail(500)
+                ).tail(300)
 
-    asyncio.run(listen())
+                st.session_state.buffer_ready = True
+
+    asyncio.run(run())
 
 
-# start thread once
+# start once
 if "ws_started" not in st.session_state:
-    thread = threading.Thread(target=run_ws, daemon=True)
+    thread = threading.Thread(target=ws_loop, daemon=True)
     thread.start()
     st.session_state.ws_started = True
 
 # ==========================================================
-# INDICATORS (REAL TIME BUFFER)
+# ENGINE LOOP SAFE (NUNCA BLOQUEIA APP)
 # ==========================================================
 df = st.session_state.price_data.copy()
 
-if len(df) < 50:
-    st.info("Aguardando fluxo de mercado...")
+# SEM STOP, SEM TRAVAR APP
+if len(df) < 5:
+    st.warning("Conectando ao fluxo de mercado... (aguarde alguns segundos)")
     st.stop()
 
-
+# ==========================================================
+# INDICADORES
+# ==========================================================
 def ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
 
 
-df["EMA50"] = ema(df["price"], 50)
+df["EMA20"] = ema(df["price"], 20)
 
 price = df["price"].iloc[-1]
-ema50 = df["EMA50"].iloc[-1]
+ema20 = df["EMA20"].iloc[-1]
 
-trend_ok = price > ema50
+trend = price > ema20
 
 # ==========================================================
 # SIGNAL ENGINE
 # ==========================================================
-if trend_ok:
+if trend:
     state = "LONG"
-    signal = "🟢 FLOW BULLISH (ABOVE EMA50)"
+    signal = "🟢 FLUXO POSITIVO (ACIMA DA EMA20)"
 else:
-    state = "BEAR"
-    signal = "🔴 FLOW BEARISH (BELOW EMA50)"
+    state = "SHORT"
+    signal = "🔴 FLUXO NEGATIVO (ABAIXO DA EMA20)"
 
 # ==========================================================
 # UI
@@ -98,7 +102,7 @@ else:
 c1, c2 = st.columns(2)
 
 c1.metric("BTC Live", f"${price:,.2f}")
-c2.metric("EMA 50 (Flow)", f"${ema50:,.2f}")
+c2.metric("EMA 20", f"${ema20:,.2f}")
 
 st.divider()
 
@@ -110,15 +114,15 @@ else:
 # ==========================================================
 # CHART REAL TIME
 # ==========================================================
-st.subheader("📊 Real-Time Price Flow")
+st.subheader("📊 Fluxo de Preço em Tempo Real")
 
 st.line_chart(df.set_index("time")["price"])
 
 # ==========================================================
-# DEBUG INFO
+# DEBUG
 # ==========================================================
 st.write({
-    "Last Update": datetime.now().strftime("%H:%M:%S"),
-    "Buffer Size": len(df),
-    "State": state
+    "Buffer size": len(df),
+    "Status": state,
+    "Last update": datetime.utcnow().strftime("%H:%M:%S UTC")
 })
