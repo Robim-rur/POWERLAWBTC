@@ -50,9 +50,9 @@ def load_data():
     btc = btc.dropna()
     btc = btc.reset_index()
 
-    # garante padrão consistente
+    # padroniza nome da data (yfinance pode variar)
     if "Date" not in btc.columns:
-        btc = btc.rename(columns={"index": "Date"})
+        btc.rename(columns={btc.columns[0]: "Date"}, inplace=True)
 
     return btc
 
@@ -74,6 +74,7 @@ def calculate_atr(data, period=14):
     tr3 = (low - close.shift()).abs()
 
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+
     atr = tr.rolling(period).mean()
 
     return atr
@@ -89,12 +90,13 @@ df = df.copy()
 df["Date"] = pd.to_datetime(df["Date"])
 
 genesis = pd.Timestamp("2009-01-03")
+
 df["Days"] = (df["Date"] - genesis).dt.days.astype(float)
 
 df = df[df["Days"] > 0].copy()
 
-x = df["Days"].to_numpy().astype(float)
-y = df["Close"].to_numpy().astype(float)
+x = df["Days"].to_numpy(dtype=float)
+y = df["Close"].to_numpy(dtype=float)
 
 log_x = np.log10(x)
 log_y = np.log10(y)
@@ -112,19 +114,21 @@ df["PowerLaw"] = np.asarray(power_law, dtype=float).flatten()
 df["PL_Distance"] = ((df["Close"] / df["PowerLaw"]) - 1) * 100
 
 # ==========================================================
-# 🔥 ESTADO ATUAL (CORREÇÃO PRINCIPAL)
+# 🔥 ESTADO ATUAL (CORREÇÃO CRÍTICA)
 # ==========================================================
 
-current_price = float(df["Close"].iloc[-1])
-current_powerlaw = float(df["PowerLaw"].iloc[-1])
-current_distance = float(df["PL_Distance"].iloc[-1])
-current_atr = float(df["ATR"].iloc[-1])
+df_clean = df.dropna(subset=["Close", "PowerLaw", "ATR", "PL_Distance"]).copy()
+
+current_price = float(df_clean["Close"].iloc[-1])
+current_powerlaw = float(df_clean["PowerLaw"].iloc[-1])
+current_distance = float(df_clean["PL_Distance"].iloc[-1])
+current_atr = float(df_clean["ATR"].iloc[-1])
 
 # ==========================================================
-# PERCENTIL
+# PERCENTIL HISTÓRICO
 # ==========================================================
 
-distance_series = df["PL_Distance"].dropna()
+distance_series = df_clean["PL_Distance"].dropna()
 
 current_percentile = percentileofscore(
     distance_series,
@@ -152,10 +156,10 @@ with col4:
 st.divider()
 
 # ==========================================================
-# SIMILARIDADE
+# ENCONTRAR SEMELHANTES
 # ==========================================================
 
-historical = df.iloc[:-1].copy()
+historical = df_clean.iloc[:-1].copy()
 
 historical["Similarity"] = (historical["PL_Distance"] - current_distance).abs()
 
@@ -163,14 +167,20 @@ sample_size = max(50, int(len(historical) * SIMILAR_PERCENT))
 
 similar_days = historical.nsmallest(sample_size, "Similarity").copy()
 
+st.subheader("Amostra Histórica")
+
+st.write(f"Dias analisados: {len(similar_days)}")
+
+st.write(f"Distância atual: {current_distance:.2f}%")
+
 # ==========================================================
-# GRÁFICO
+# GRÁFICO POWER LAW
 # ==========================================================
 
 fig = go.Figure()
 
-fig.add_trace(go.Scatter(x=df["Date"], y=df["Close"], name="BTC"))
-fig.add_trace(go.Scatter(x=df["Date"], y=df["PowerLaw"], name="Power Law"))
+fig.add_trace(go.Scatter(x=df_clean["Date"], y=df_clean["Close"], name="BTC"))
+fig.add_trace(go.Scatter(x=df_clean["Date"], y=df_clean["PowerLaw"], name="Power Law"))
 
 fig.update_layout(height=600, yaxis_type="log")
 
@@ -241,13 +251,19 @@ def run_probability_engine(similar_data, full_data):
         total = wins + losses
 
         if total == 0:
-            results[atr_mult] = {"win_rate": 0, "ev": 0, "avg_time": 0, "samples": 0}
+            results[atr_mult] = {
+                "win_rate": 0,
+                "ev": 0,
+                "avg_time": 0,
+                "samples": 0
+            }
             continue
 
         win_rate = wins / total
         loss_rate = losses / total
 
         ev = (win_rate * atr_mult) - (loss_rate * 1)
+
         avg_time = np.mean(times)
 
         results[atr_mult] = {
@@ -265,11 +281,12 @@ def run_probability_engine(similar_data, full_data):
 
 st.subheader("Probabilidade ATR")
 
-results = run_probability_engine(similar_days, df)
+results = run_probability_engine(similar_days, df_clean)
 
 table_data = []
 
 for k, v in results.items():
+
     table_data.append([
         f"+{k} ATR",
         f"{v['win_rate']*100:.2f}%",
@@ -283,10 +300,6 @@ table_df = pd.DataFrame(table_data, columns=[
 ])
 
 st.dataframe(table_df, use_container_width=True)
-
-# ==========================================================
-# MELHOR EV
-# ==========================================================
 
 best = max(results.items(), key=lambda x: x[1]["ev"])
 
@@ -303,6 +316,12 @@ final_score = min(max(ev_mean * 25, 0), 100)
 
 st.metric("Score Final", f"{final_score:.1f}/100")
 
+if final_score >= 75:
+    st.success("🟢 BUY ZONE")
+elif final_score >= 50:
+    st.warning("🟡 NEUTRO")
+else:
+    st.error("🔴 EVITAR")
 if final_score >= 75:
     st.success("🟢 BUY ZONE")
 elif final_score >= 50:
