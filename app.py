@@ -9,10 +9,10 @@ from datetime import datetime
 # CONFIG
 # ==========================================================
 st.set_page_config(page_title="BTC Signal Engine v2", layout="wide")
-st.title("🏦 BTC Signal Engine v2 — Institutional Grade")
+st.title("🏦 BTC Signal Engine v2 — Institutional Grade (FIXED)")
 
 # ==========================================================
-# SESSION STATE (HISTÓRICO DE SINAIS)
+# SESSION STATE (HISTÓRICO)
 # ==========================================================
 if "signal_log" not in st.session_state:
     st.session_state.signal_log = []
@@ -44,6 +44,30 @@ if df.empty:
     st.stop()
 
 # ==========================================================
+# POWER LAW (RESTORED CORRECTLY)
+# ==========================================================
+def power_law(df):
+    df = df.copy()
+
+    df["Date"] = pd.to_datetime(df["Date"])
+    genesis = pd.Timestamp("2009-01-03")
+
+    df["Days"] = (df["Date"] - genesis).dt.days.astype(float)
+    df = df[df["Days"] > 0].copy()
+
+    x = np.log10(df["Days"].to_numpy())
+    y = np.log10(df["Close"].to_numpy())
+
+    slope, intercept = np.polyfit(x, y, 1)
+
+    df["PowerLaw"] = 10 ** (intercept + slope * x)
+
+    return df
+
+
+df = power_law(df)
+
+# ==========================================================
 # INDICADORES
 # ==========================================================
 def ema(series, period):
@@ -69,16 +93,17 @@ df["RSI"] = rsi(df["Close"], 14)
 df = df.dropna()
 
 # ==========================================================
-# STATE (ÚLTIMO CANDLE)
+# STATE
 # ==========================================================
-price = df["Close"].iloc[-1]
-ema169 = df["EMA169"].iloc[-1]
-rsi_now = df["RSI"].iloc[-1]
+price = float(df["Close"].iloc[-1])
+ema169 = float(df["EMA169"].iloc[-1])
+rsi_now = float(df["RSI"].iloc[-1])
+pl = float(df["PowerLaw"].iloc[-1])
 
 trend_ok = price > ema169
 
 # ==========================================================
-# SCORE (CONTÍNUO E ESTÁVEL)
+# SCORE ENGINE (ESTÁVEL)
 # ==========================================================
 trend_score = 60 if trend_ok else 0
 momentum_score = np.clip((40 - rsi_now) * 1.5, 0, 25)
@@ -87,7 +112,7 @@ quality_score = 15 if rsi_now < 45 else 5 if rsi_now < 55 else 0
 score = trend_score + momentum_score + quality_score
 
 # ==========================================================
-# STATE MACHINE (PROFISSIONAL)
+# STATE MACHINE
 # ==========================================================
 if not trend_ok:
     state = "BLOCKED"
@@ -106,26 +131,25 @@ else:
     signal = "🔴 SEM TRADE"
 
 # ==========================================================
-# LOG DE SINAL (HISTÓRICO)
+# LOG (HISTÓRICO)
 # ==========================================================
-last_entry = st.session_state.signal_log[-1] if st.session_state.signal_log else None
+last = st.session_state.signal_log[-1]["state"] if st.session_state.signal_log else None
 
-new_entry = {
+entry = {
     "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    "price": float(price),
-    "ema169": float(ema169),
-    "rsi": float(rsi_now),
-    "score": float(score),
+    "price": price,
+    "ema169": ema169,
+    "rsi": rsi_now,
+    "score": score,
     "state": state,
     "signal": signal
 }
 
-# evita duplicação idêntica consecutiva
-if last_entry is None or last_entry["state"] != state:
-    st.session_state.signal_log.append(new_entry)
+if last != state:
+    st.session_state.signal_log.append(entry)
 
 # ==========================================================
-# UI RENDERER (SEM BUG STREAMLIT)
+# UI SIGNAL (CORRIGIDO - SEM DELTAGENERATOR BUG)
 # ==========================================================
 if state == "LONG":
     st.success(signal)
@@ -139,16 +163,17 @@ else:
 # ==========================================================
 # METRICS
 # ==========================================================
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 
 c1.metric("BTC", f"${price:,.0f}")
 c2.metric("EMA 169", f"${ema169:,.0f}")
-c3.metric("Score", f"{score:.1f}/100")
+c3.metric("Power Law", f"${pl:,.0f}")
+c4.metric("Score", f"{score:.1f}/100")
 
 st.divider()
 
 # ==========================================================
-# CHART
+# CHART (POWER LAW GARANTIDO)
 # ==========================================================
 fig = go.Figure()
 
@@ -164,14 +189,22 @@ fig.add_trace(go.Scatter(
     name="EMA 169"
 ))
 
-fig.update_layout(height=600, yaxis_type="log")
+# 🔥 POWER LAW RESTAURADO (GARANTIDO NO GRÁFICO)
+fig.add_trace(go.Scatter(
+    x=df["Date"],
+    y=df["PowerLaw"],
+    name="Power Law",
+    line=dict(dash="dot", width=2)
+))
+
+fig.update_layout(height=650, yaxis_type="log")
 
 st.plotly_chart(fig, use_container_width=True)
 
 # ==========================================================
-# HISTÓRICO DE SINAIS
+# HISTÓRICO
 # ==========================================================
-st.subheader("📊 Histórico de Sinais (Engine Log)")
+st.subheader("📊 Histórico de Sinais")
 
 log_df = pd.DataFrame(st.session_state.signal_log)
 
@@ -185,7 +218,7 @@ if not log_df.empty:
         mime="text/csv"
     )
 else:
-    st.info("Ainda não há histórico de sinais.")
+    st.info("Sem histórico ainda.")
 
 # ==========================================================
 # RESUMO
@@ -195,6 +228,7 @@ st.subheader("Resumo Institucional")
 st.write({
     "Preço": price,
     "EMA169": ema169,
+    "Power Law": pl,
     "RSI": rsi_now,
     "Score": score,
     "State": state
