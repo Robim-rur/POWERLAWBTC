@@ -8,8 +8,8 @@ from datetime import datetime
 # ==========================================================
 # CONFIG
 # ==========================================================
-st.set_page_config(page_title="BTC Hedge Fund Engine", layout="wide")
-st.title("🏦 BTC Hedge Fund Engine — Stable Final Build")
+st.set_page_config(page_title="BTC Hedge Engine Stable", layout="wide")
+st.title("🏦 BTC Hedge Engine — Final Stable v4")
 
 # ==========================================================
 # STATE
@@ -18,43 +18,33 @@ if "log" not in st.session_state:
     st.session_state.log = []
 
 # ==========================================================
-# SAFE DATA ENGINE (FINAL FIX)
+# DATA ENGINE (ROBUSTO)
 # ==========================================================
-def fetch_yahoo(interval="1h", period="60d"):
+def fetch_yahoo():
 
     df = yf.download(
         "BTC-USD",
-        interval=interval,
-        period=period,
+        interval="1h",
+        period="60d",
         auto_adjust=True,
         progress=False
     )
 
-    if df is None or len(df) == 0:
+    if df is None or len(df) < 50:
         return pd.DataFrame()
 
-    # ======================================================
-    # 🔥 FIX CRÍTICO: FLATTEN TOTAL (RESOLVE SEU ERRO)
-    # ======================================================
+    df = df.reset_index()
+
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-
-    df = df.reset_index()
 
     time_col = df.columns[0]
     df.rename(columns={time_col: "Datetime"}, inplace=True)
 
     df["Datetime"] = pd.to_datetime(df["Datetime"], errors="coerce")
 
-    # força colunas numéricas seguras (SEM to_numeric quebrando)
     for col in ["Open", "High", "Low", "Close"]:
-
-        if col in df.columns:
-
-            # força array 1D direto (elimina erro pandas)
-            df[col] = np.asarray(df[col]).reshape(-1)
-
-            df[col] = pd.to_numeric(pd.Series(df[col]), errors="coerce")
+        df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df = df.dropna()
 
@@ -63,12 +53,12 @@ def fetch_yahoo(interval="1h", period="60d"):
 
 df = fetch_yahoo()
 
-if df.empty:
-    st.error("Sem dados disponíveis")
+if df.empty or len(df) < 50:
+    st.error("Dataset insuficiente para cálculo seguro")
     st.stop()
 
 # ==========================================================
-# INDICATORS
+# INDICATORS SAFE
 # ==========================================================
 def ema(series, period):
     return pd.Series(series).ewm(span=period, adjust=False).mean()
@@ -77,6 +67,10 @@ def ema(series, period):
 def rsi(series, period=14):
 
     series = np.asarray(series).reshape(-1)
+
+    # 🔥 PROTEÇÃO CRÍTICA
+    if len(series) < period + 2:
+        return np.zeros(len(series))
 
     delta = np.diff(series, prepend=series[0])
 
@@ -94,7 +88,7 @@ def rsi(series, period=14):
     return (100 - (100 / (1 + rs))).fillna(0)
 
 # ==========================================================
-# POWER LAW (100% SAFE)
+# POWER LAW SAFE
 # ==========================================================
 def power_law(df):
 
@@ -106,10 +100,9 @@ def power_law(df):
 
     df["Days"] = (dt.astype("int64") - genesis.value) / 86400e9
 
-    df = df.dropna(subset=["Days", "Close"])
     df = df[df["Days"] > 0]
 
-    if len(df) < 20:
+    if len(df) < 30:
         df["PowerLaw"] = np.nan
         return df
 
@@ -137,6 +130,10 @@ df["RSI"] = rsi(df["Close"], 14)
 
 df = df.dropna()
 
+if len(df) < 50:
+    st.error("Dados insuficientes após indicadores")
+    st.stop()
+
 # ==========================================================
 # STATE
 # ==========================================================
@@ -148,7 +145,7 @@ pl = float(df["PowerLaw"].iloc[-1])
 trend_ok = price > ema169
 
 # ==========================================================
-# SCORE ENGINE
+# SCORE
 # ==========================================================
 trend_score = 60 if trend_ok else 0
 momentum_score = np.clip((45 - rsi_now) * 1.5, 0, 30)
@@ -157,7 +154,7 @@ quality_score = 10 if rsi_now < 50 else 5
 score = trend_score + momentum_score + quality_score
 
 # ==========================================================
-# SIGNAL ENGINE
+# SIGNAL
 # ==========================================================
 if not trend_ok:
     state = "BLOCKED"
@@ -175,54 +172,4 @@ else:
     state = "NO_TRADE"
     signal = "🔴 SEM EDGE"
 
-# ==========================================================
-# LOG
-# ==========================================================
-st.session_state.log.append({
-    "time": datetime.now().strftime("%H:%M:%S"),
-    "price": price,
-    "ema169": ema169,
-    "rsi": rsi_now,
-    "score": score,
-    "state": state
-})
-
-# ==========================================================
-# UI
-# ==========================================================
-if state == "LONG":
-    st.success(signal)
-elif state == "WAIT":
-    st.warning(signal)
-else:
-    st.error(signal)
-
-# ==========================================================
-# METRICS
-# ==========================================================
-c1, c2, c3, c4 = st.columns(4)
-
-c1.metric("BTC", f"${price:,.0f}")
-c2.metric("EMA 169", f"${ema169:,.0f}")
-c3.metric("RSI", f"{rsi_now:.2f}")
-c4.metric("Score", f"{score:.1f}/100")
-
-# ==========================================================
-# CHART
-# ==========================================================
-fig = go.Figure()
-
-fig.add_trace(go.Scatter(x=df["Datetime"], y=df["Close"], name="BTC"))
-fig.add_trace(go.Scatter(x=df["Datetime"], y=df["EMA169"], name="EMA 169"))
-fig.add_trace(go.Scatter(x=df["Datetime"], y=df["PowerLaw"], name="Power Law"))
-
-fig.update_layout(height=650)
-
-st.plotly_chart(fig, use_container_width=True)
-
-# ==========================================================
-# LOG TABLE
-# ==========================================================
-st.subheader("Log")
-
-st.dataframe(pd.DataFrame(st.session_state.log))
+# =========================================================
