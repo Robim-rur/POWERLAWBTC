@@ -83,31 +83,33 @@ def calculate_atr(data, period=14):
 df["ATR"] = calculate_atr(df, ATR_PERIOD)
 
 # ==========================================================
-# POWER LAW (CORRIGIDO ROBUSTO)
+# POWER LAW (VERSÃO À PROVA DE ERROS STREAMLIT)
 # ==========================================================
 
 df = df.copy()
 
-df["Days"] = (
-    pd.to_datetime(df["Date"])
-    - pd.Timestamp("2009-01-03")
-).dt.days
+df["Date"] = pd.to_datetime(df["Date"])
+
+genesis = pd.Timestamp("2009-01-03")
+
+df["Days"] = (df["Date"] - genesis).dt.days.astype(float)
 
 df = df[df["Days"] > 0].copy()
 
-# garantir float puro (evita DataFrame acidental)
-x = np.array(df["Days"].astype(float))
-y = np.array(df["Close"].astype(float))
+x = df["Days"].to_numpy(dtype=float)
+y = df["Close"].to_numpy(dtype=float)
 
 log_x = np.log10(x)
 log_y = np.log10(y)
 
 slope, intercept = np.polyfit(log_x, log_y, 1)
 
-power_law = 10 ** (intercept + slope * log_x)
+power_law_values = 10 ** (intercept + slope * log_x)
 
-# FORÇAR SERIES (isso evita o erro do Pandas)
-df["PowerLaw"] = pd.Series(power_law, index=df.index).astype(float)
+# 🔥 FORÇA SERIES PURA (mata erro do pandas)
+df["PowerLaw"] = power_law_values.astype(float)
+
+df["Close"] = df["Close"].astype(float)
 
 # ==========================================================
 # DISTÂNCIA DA POWER LAW (AGORA SEGURA)
