@@ -42,7 +42,7 @@ if df.empty:
     st.stop()
 
 # ==========================================================
-# INDICADORES BASE
+# INDICADORES
 # ==========================================================
 def atr(df, period=14):
     high = df["High"]
@@ -114,15 +114,13 @@ def adx(df, period=14):
 
 
 # ==========================================================
-# APPLY INDICATORS
+# FEATURES
 # ==========================================================
 df["ATR"] = atr(df, ATR_PERIOD)
 df["EMA69"] = ema(df["Close"], 69)
 df["RSI"] = rsi(df["Close"], 14)
-
 df["STOCH_K"], df["STOCH_D"] = stochastic_rsi(df["RSI"])
 df["ADX"], df["DI+"], df["DI-"] = adx(df)
-
 df["VOL_MA20"] = df["Volume"].rolling(20).mean()
 
 df = df.dropna().reset_index(drop=True)
@@ -140,7 +138,6 @@ x = np.log10(df["Days"].to_numpy())
 y = np.log10(df["Close"].to_numpy())
 
 slope, intercept = np.polyfit(x, y, 1)
-
 df["PowerLaw"] = 10 ** (intercept + slope * x)
 
 df["PL_Distance"] = ((df["Close"] / df["PowerLaw"]) - 1) * 100
@@ -151,11 +148,15 @@ df["PL_Distance"] = ((df["Close"] / df["PowerLaw"]) - 1) * 100
 price = df["Close"].iloc[-1]
 pl = df["PowerLaw"].iloc[-1]
 dist = df["PL_Distance"].iloc[-1]
+
 rsi_now = df["RSI"].iloc[-1]
 stoch_k = df["STOCH_K"].iloc[-1]
 adx_now = df["ADX"].iloc[-1]
 di_plus = df["DI+"].iloc[-1]
+di_minus = df["DI-"].iloc[-1]
+
 ema69 = df["EMA69"].iloc[-1]
+
 vol = df["Volume"].iloc[-1]
 vol_ma = df["VOL_MA20"].iloc[-1]
 
@@ -177,14 +178,20 @@ def regime(dist):
 reg = regime(dist)
 
 # ==========================================================
-# SCORE (INSTITUTIONAL VERSION)
+# HARD FILTER (OBRIGATÓRIO)
 # ==========================================================
-trend_score = 1 if price > ema69 and adx_now > 20 and di_plus > df["DI-"].iloc[-1] else 0
+trend_filter = (
+    price > ema69 and
+    adx_now > 20 and
+    di_plus > di_minus
+)
 
+# ==========================================================
+# SCORE (0–100 CORRIGIDO)
+# ==========================================================
+trend_score = 1 if trend_filter else 0
 momentum_score = 1 if (rsi_now < 40 and stoch_k < 0.2) else 0
-
 value_score = max(0, 1 - abs(dist) / 100)
-
 volume_score = 1 if vol > vol_ma else 0
 
 score = (
@@ -209,14 +216,20 @@ st.divider()
 st.subheader(f"Regime: {reg}")
 
 # ==========================================================
-# SIGNAL
+# SIGNAL ENGINE (CORRIGIDO)
 # ==========================================================
-if score > 75:
-    st.success("🟢 LONG SETUP CONFIRMADO")
+if not trend_filter:
+    signal = "🔴 BLOQUEADO (ABAIXO DA TENDÊNCIA)"
+elif score > 75:
+    signal = "🟢 LONG SETUP CONFIRMADO"
 elif score > 50:
-    st.warning("🟡 AGUARDAR CONFIRMAÇÃO")
+    signal = "🟡 AGUARDAR CONFIRMAÇÃO"
 else:
-    st.error("🔴 SEM TRADE")
+    signal = "🔴 SEM TRADE"
+
+st.success(signal) if "CONFIRMADO" in signal else \
+st.warning(signal) if "AGUARDAR" in signal else \
+st.error(signal)
 
 # ==========================================================
 # CHART
@@ -241,8 +254,9 @@ st.write({
     "Power Law": pl,
     "Distância": dist,
     "RSI": rsi_now,
-    "Stoch RSI K": stoch_k,
+    "Stoch RSI": stoch_k,
     "ADX": adx_now,
     "Regime": reg,
-    "Score": score
+    "Score": score,
+    "Filtro Tendência": bool(trend_filter)
 })
