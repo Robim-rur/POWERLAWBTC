@@ -9,11 +9,13 @@ from zoneinfo import ZoneInfo
 # ==========================================================
 # CONFIG
 # ==========================================================
-st.set_page_config(page_title="BTC Signal Engine v2", layout="wide")
-st.title("🏦 BTC Signal Engine v2 — Institutional Grade (TIMEZONE FIX)")
+st.set_page_config(page_title="BTC Real-Time Engine PRO", layout="wide")
+st.title("🏦 BTC Real-Time Engine PRO (Institutional)")
 
-# timezone Brasil
 tz = ZoneInfo("America/Sao_Paulo")
+
+# 🔁 auto refresh (tempo real simulado)
+st.autorefresh(interval=60 * 1000, key="refresh")  # 60s
 
 # ==========================================================
 # SESSION STATE
@@ -24,12 +26,13 @@ if "signal_log" not in st.session_state:
 # ==========================================================
 # DATA
 # ==========================================================
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=60)
 def load_data():
+
     df = yf.download(
         "BTC-USD",
-        start="2010-07-17",
-        interval="1d",
+        period="30d",
+        interval="1h",   # 🔥 agora é base de 1 hora (mais real-time)
         auto_adjust=True,
         progress=False
     )
@@ -37,12 +40,14 @@ def load_data():
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    df.reset_index(inplace=True)
+    df = df.reset_index()
 
     # ======================================================
-    # FIX TIMEZONE (remove offset/shift)
+    # 🔥 FIX DEFINITIVO DE FUSO HORÁRIO
     # ======================================================
-    df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
+    df["Datetime"] = pd.to_datetime(df["Datetime"], utc=True)
+    df["Datetime"] = df["Datetime"].dt.tz_convert("America/Sao_Paulo")
+    df["Datetime"] = df["Datetime"].dt.tz_localize(None)
 
     return df
 
@@ -50,32 +55,8 @@ def load_data():
 df = load_data()
 
 if df.empty:
-    st.error("Sem dados disponíveis")
+    st.error("Sem dados")
     st.stop()
-
-# ==========================================================
-# POWER LAW
-# ==========================================================
-def power_law(df):
-    df = df.copy()
-
-    df["Date"] = pd.to_datetime(df["Date"])
-    genesis = pd.Timestamp("2009-01-03")
-
-    df["Days"] = (df["Date"] - genesis).dt.days.astype(float)
-    df = df[df["Days"] > 0].copy()
-
-    x = np.log10(df["Days"].to_numpy())
-    y = np.log10(df["Close"].to_numpy())
-
-    slope, intercept = np.polyfit(x, y, 1)
-
-    df["PowerLaw"] = 10 ** (intercept + slope * x)
-
-    return df
-
-
-df = power_law(df)
 
 # ==========================================================
 # INDICADORES
@@ -108,12 +89,11 @@ df = df.dropna()
 price = float(df["Close"].iloc[-1])
 ema169 = float(df["EMA169"].iloc[-1])
 rsi_now = float(df["RSI"].iloc[-1])
-pl = float(df["PowerLaw"].iloc[-1])
 
 trend_ok = price > ema169
 
 # ==========================================================
-# SCORE
+# SCORE ENGINE
 # ==========================================================
 trend_score = 60 if trend_ok else 0
 momentum_score = np.clip((40 - rsi_now) * 1.5, 0, 25)
@@ -141,9 +121,9 @@ else:
     signal = "🔴 SEM TRADE"
 
 # ==========================================================
-# LOG (TIMEZONE FIX AQUI)
+# LOG (TIME CORRIGIDO)
 # ==========================================================
-last = st.session_state.signal_log[-1]["state"] if st.session_state.signal_log else None
+last_state = st.session_state.signal_log[-1]["state"] if st.session_state.signal_log else None
 
 entry = {
     "time": datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S"),
@@ -155,11 +135,11 @@ entry = {
     "signal": signal
 }
 
-if last != state:
+if last_state != state:
     st.session_state.signal_log.append(entry)
 
 # ==========================================================
-# UI SIGNAL (CORRIGIDO)
+# UI SIGNAL (SEGURO)
 # ==========================================================
 if state == "LONG":
     st.success(signal)
@@ -173,47 +153,39 @@ else:
 # ==========================================================
 # METRICS
 # ==========================================================
-c1, c2, c3, c4 = st.columns(4)
+c1, c2, c3 = st.columns(3)
 
-c1.metric("BTC", f"${price:,.0f}")
+c1.metric("BTC (1H)", f"${price:,.0f}")
 c2.metric("EMA 169", f"${ema169:,.0f}")
-c3.metric("Power Law", f"${pl:,.0f}")
-c4.metric("Score", f"{score:.1f}/100")
+c3.metric("Score", f"{score:.1f}/100")
 
 st.divider()
 
 # ==========================================================
-# CHART
+# CHART REAL-TIME
 # ==========================================================
 fig = go.Figure()
 
 fig.add_trace(go.Scatter(
-    x=df["Date"],
+    x=df["Datetime"],
     y=df["Close"],
-    name="BTC"
+    name="BTC (1H)"
 ))
 
 fig.add_trace(go.Scatter(
-    x=df["Date"],
+    x=df["Datetime"],
     y=df["EMA169"],
     name="EMA 169"
 ))
 
-fig.add_trace(go.Scatter(
-    x=df["Date"],
-    y=df["PowerLaw"],
-    name="Power Law",
-    line=dict(dash="dot", width=2)
-))
-
-fig.update_layout(height=650, yaxis_type="log")
+fig.update_layout(height=650)
 
 st.plotly_chart(fig, use_container_width=True)
 
 # ==========================================================
 # HISTÓRICO
 # ==========================================================
-st.subheader("📊 Histórico de Sinais")
+st.subheader("📊 Histórico de Sinais (Real-Time)")
 
 log_df = pd.DataFrame(st.session_state.signal_log)
 
@@ -230,9 +202,9 @@ st.subheader("Resumo Institucional")
 st.write({
     "Preço": price,
     "EMA169": ema169,
-    "Power Law": pl,
     "RSI": rsi_now,
     "Score": score,
     "State": state,
+    "Timeframe": "1H Real-Time Simulado",
     "Timezone": "America/Sao_Paulo"
 })
