@@ -8,110 +8,55 @@ from datetime import datetime
 # ==========================================================
 # CONFIG
 # ==========================================================
-st.set_page_config(page_title="BTC Hedge Engine Stable", layout="wide")
-st.title("🏦 BTC Hedge Engine — Final Stable v4")
+st.set_page_config(page_title="BTC Signal Engine v2", layout="wide")
+st.title("🏦 BTC Signal Engine v2 — Institutional Grade (FIXED)")
 
 # ==========================================================
-# STATE
+# SESSION STATE (HISTÓRICO)
 # ==========================================================
-if "log" not in st.session_state:
-    st.session_state.log = []
+if "signal_log" not in st.session_state:
+    st.session_state.signal_log = []
 
 # ==========================================================
-# DATA ENGINE (ROBUSTO)
+# DATA
 # ==========================================================
-def fetch_yahoo():
-
+@st.cache_data(ttl=3600)
+def load_data():
     df = yf.download(
         "BTC-USD",
-        interval="1h",
-        period="60d",
+        start="2010-07-17",
+        interval="1d",
         auto_adjust=True,
         progress=False
     )
 
-    if df is None or len(df) < 50:
-        return pd.DataFrame()
-
-    df = df.reset_index()
-
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    time_col = df.columns[0]
-    df.rename(columns={time_col: "Datetime"}, inplace=True)
-
-    df["Datetime"] = pd.to_datetime(df["Datetime"], errors="coerce")
-
-    for col in ["Open", "High", "Low", "Close"]:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-
-    df = df.dropna()
-
+    df.reset_index(inplace=True)
     return df
 
 
-df = fetch_yahoo()
+df = load_data()
 
-if df.empty or len(df) < 50:
-    st.error("Dataset insuficiente para cálculo seguro")
+if df.empty:
+    st.error("Sem dados disponíveis")
     st.stop()
 
 # ==========================================================
-# INDICATORS SAFE
-# ==========================================================
-def ema(series, period):
-    return pd.Series(series).ewm(span=period, adjust=False).mean()
-
-
-def rsi(series, period=14):
-
-    series = np.asarray(series).reshape(-1)
-
-    # 🔥 PROTEÇÃO CRÍTICA
-    if len(series) < period + 2:
-        return np.zeros(len(series))
-
-    delta = np.diff(series, prepend=series[0])
-
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
-
-    gain = pd.Series(gain)
-    loss = pd.Series(loss)
-
-    avg_gain = gain.rolling(period).mean()
-    avg_loss = loss.rolling(period).mean()
-
-    rs = avg_gain / avg_loss
-
-    return (100 - (100 / (1 + rs))).fillna(0)
-
-# ==========================================================
-# POWER LAW SAFE
+# POWER LAW (RESTORED CORRECTLY)
 # ==========================================================
 def power_law(df):
-
     df = df.copy()
 
+    df["Date"] = pd.to_datetime(df["Date"])
     genesis = pd.Timestamp("2009-01-03")
 
-    dt = pd.to_datetime(df["Datetime"])
+    df["Days"] = (df["Date"] - genesis).dt.days.astype(float)
+    df = df[df["Days"] > 0].copy()
 
-    df["Days"] = (dt.astype("int64") - genesis.value) / 86400e9
-
-    df = df[df["Days"] > 0]
-
-    if len(df) < 30:
-        df["PowerLaw"] = np.nan
-        return df
-
-    x = np.log10(df["Days"].values)
-    y = np.log10(df["Close"].values)
-
-    if len(x) == 0 or len(y) == 0:
-        df["PowerLaw"] = np.nan
-        return df
+    x = np.log10(df["Days"].to_numpy())
+    y = np.log10(df["Close"].to_numpy())
 
     slope, intercept = np.polyfit(x, y, 1)
 
@@ -123,16 +68,29 @@ def power_law(df):
 df = power_law(df)
 
 # ==========================================================
-# FEATURES
+# INDICADORES
 # ==========================================================
+def ema(series, period):
+    return series.ewm(span=period, adjust=False).mean()
+
+
+def rsi(series, period=14):
+    delta = series.diff()
+
+    gain = np.where(delta > 0, delta, 0)
+    loss = np.where(delta < 0, -delta, 0)
+
+    avg_gain = pd.Series(gain).rolling(period).mean()
+    avg_loss = pd.Series(loss).rolling(period).mean()
+
+    rs = avg_gain / avg_loss
+    return 100 - (100 / (1 + rs))
+
+
 df["EMA169"] = ema(df["Close"], 169)
 df["RSI"] = rsi(df["Close"], 14)
 
 df = df.dropna()
-
-if len(df) < 50:
-    st.error("Dados insuficientes após indicadores")
-    st.stop()
 
 # ==========================================================
 # STATE
@@ -145,31 +103,133 @@ pl = float(df["PowerLaw"].iloc[-1])
 trend_ok = price > ema169
 
 # ==========================================================
-# SCORE
+# SCORE ENGINE (ESTÁVEL)
 # ==========================================================
 trend_score = 60 if trend_ok else 0
-momentum_score = np.clip((45 - rsi_now) * 1.5, 0, 30)
-quality_score = 10 if rsi_now < 50 else 5
+momentum_score = np.clip((40 - rsi_now) * 1.5, 0, 25)
+quality_score = 15 if rsi_now < 45 else 5 if rsi_now < 55 else 0
 
 score = trend_score + momentum_score + quality_score
 
 # ==========================================================
-# SIGNAL
+# STATE MACHINE
 # ==========================================================
 if not trend_ok:
     state = "BLOCKED"
-    signal = "⛔ ABAIXO DA EMA 169"
+    signal = "⛔ BLOQUEADO (ABAIXO DA EMA 169)"
 
 elif score >= 75:
     state = "LONG"
-    signal = "🟢 SETUP CONFIRMADO"
+    signal = "🟢 LONG SETUP CONFIRMADO"
 
 elif score >= 50:
     state = "WAIT"
-    signal = "🟡 AGUARDAR"
+    signal = "🟡 AGUARDAR CONFIRMAÇÃO"
 
 else:
     state = "NO_TRADE"
-    signal = "🔴 SEM EDGE"
+    signal = "🔴 SEM TRADE"
 
-# =========================================================
+# ==========================================================
+# LOG (HISTÓRICO)
+# ==========================================================
+last = st.session_state.signal_log[-1]["state"] if st.session_state.signal_log else None
+
+entry = {
+    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    "price": price,
+    "ema169": ema169,
+    "rsi": rsi_now,
+    "score": score,
+    "state": state,
+    "signal": signal
+}
+
+if last != state:
+    st.session_state.signal_log.append(entry)
+
+# ==========================================================
+# UI SIGNAL (CORRIGIDO - SEM DELTAGENERATOR BUG)
+# ==========================================================
+if state == "LONG":
+    st.success(signal)
+
+elif state == "WAIT":
+    st.warning(signal)
+
+else:
+    st.error(signal)
+
+# ==========================================================
+# METRICS
+# ==========================================================
+c1, c2, c3, c4 = st.columns(4)
+
+c1.metric("BTC", f"${price:,.0f}")
+c2.metric("EMA 169", f"${ema169:,.0f}")
+c3.metric("Power Law", f"${pl:,.0f}")
+c4.metric("Score", f"{score:.1f}/100")
+
+st.divider()
+
+# ==========================================================
+# CHART (POWER LAW GARANTIDO)
+# ==========================================================
+fig = go.Figure()
+
+fig.add_trace(go.Scatter(
+    x=df["Date"],
+    y=df["Close"],
+    name="BTC"
+))
+
+fig.add_trace(go.Scatter(
+    x=df["Date"],
+    y=df["EMA169"],
+    name="EMA 169"
+))
+
+# 🔥 POWER LAW RESTAURADO (GARANTIDO NO GRÁFICO)
+fig.add_trace(go.Scatter(
+    x=df["Date"],
+    y=df["PowerLaw"],
+    name="Power Law",
+    line=dict(dash="dot", width=2)
+))
+
+fig.update_layout(height=650, yaxis_type="log")
+
+st.plotly_chart(fig, use_container_width=True)
+
+# ==========================================================
+# HISTÓRICO
+# ==========================================================
+st.subheader("📊 Histórico de Sinais")
+
+log_df = pd.DataFrame(st.session_state.signal_log)
+
+if not log_df.empty:
+    st.dataframe(log_df, use_container_width=True)
+
+    st.download_button(
+        "📥 Baixar histórico",
+        log_df.to_csv(index=False),
+        file_name="signal_log.csv",
+        mime="text/csv"
+    )
+else:
+    st.info("Sem histórico ainda.")
+
+# ==========================================================
+# RESUMO
+# ==========================================================
+st.subheader("Resumo Institucional")
+
+st.write({
+    "Preço": price,
+    "EMA169": ema169,
+    "Power Law": pl,
+    "RSI": rsi_now,
+    "Score": score,
+    "State": state
+})
