@@ -4,15 +4,12 @@ import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 # ==========================================================
 # CONFIG
 # ==========================================================
 st.set_page_config(page_title="BTC Institutional Engine", layout="wide")
-st.title("🏦 BTC Institutional Signal Engine (FULL VERSION)")
-
-tz = ZoneInfo("America/Sao_Paulo")
+st.title("🏦 BTC Signal Engine — Full Fixed Version")
 
 # ==========================================================
 # SESSION STATE
@@ -21,7 +18,7 @@ if "log" not in st.session_state:
     st.session_state.log = []
 
 # ==========================================================
-# DATA (STABLE REAL-TIME VIA POLLING)
+# DATA
 # ==========================================================
 @st.cache_data(ttl=10)
 def load_data():
@@ -34,22 +31,35 @@ def load_data():
     )
 
     df = df.reset_index()
-    df["Datetime"] = pd.to_datetime(df["Datetime"])
+
+    # normaliza nome da coluna de tempo
+    if "Datetime" not in df.columns:
+        df.rename(columns={df.columns[0]: "Datetime"}, inplace=True)
+
+    df["Datetime"] = pd.to_datetime(df["Datetime"]).dt.tz_localize(None)
 
     return df
 
 
 df = load_data()
 
+if df.empty:
+    st.error("Sem dados disponíveis")
+    st.stop()
+
 # ==========================================================
-# POWER LAW
+# POWER LAW (FIX DEFINITIVO)
 # ==========================================================
 def power_law(df):
     df = df.copy()
 
     genesis = pd.Timestamp("2009-01-03")
-    df["Days"] = (df["Datetime"] - genesis).dt.days.astype(float)
-    df = df[df["Days"] > 0]
+
+    # garante tipo 100% compatível
+    dt = pd.to_datetime(df["Datetime"]).dt.tz_localize(None)
+
+    df["Days"] = (dt - genesis).dt.total_seconds() / 86400.0
+    df = df[df["Days"] > 0].copy()
 
     x = np.log10(df["Days"].values)
     y = np.log10(df["Close"].values)
@@ -64,7 +74,7 @@ def power_law(df):
 df = power_law(df)
 
 # ==========================================================
-# INDICATORS
+# INDICADORES
 # ==========================================================
 def ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
@@ -127,10 +137,10 @@ else:
     signal = "🔴 SEM SETUP"
 
 # ==========================================================
-# LOG (TIME CORRIGIDO)
+# LOG
 # ==========================================================
 entry = {
-    "time": datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S"),
+    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     "price": price,
     "ema169": ema169,
     "rsi": rsi_now,
@@ -142,7 +152,7 @@ if len(st.session_state.log) == 0 or st.session_state.log[-1]["state"] != state:
     st.session_state.log.append(entry)
 
 # ==========================================================
-# UI
+# UI SIGNAL
 # ==========================================================
 if state == "LONG":
     st.success(signal)
@@ -166,8 +176,17 @@ c4.metric("Score", f"{score:.1f}/100")
 # ==========================================================
 fig = go.Figure()
 
-fig.add_trace(go.Scatter(x=df["Datetime"], y=df["Close"], name="BTC"))
-fig.add_trace(go.Scatter(x=df["Datetime"], y=df["EMA169"], name="EMA 169"))
+fig.add_trace(go.Scatter(
+    x=df["Datetime"],
+    y=df["Close"],
+    name="BTC"
+))
+
+fig.add_trace(go.Scatter(
+    x=df["Datetime"],
+    y=df["EMA169"],
+    name="EMA 169"
+))
 
 fig.add_trace(go.Scatter(
     x=df["Datetime"],
@@ -181,7 +200,7 @@ fig.update_layout(height=650)
 st.plotly_chart(fig, use_container_width=True)
 
 # ==========================================================
-# LOG
+# LOG TABLE
 # ==========================================================
 st.subheader("Log de Sinais")
 
