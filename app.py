@@ -1,210 +1,124 @@
 import streamlit as st
+import asyncio
+import websockets
+import json
 import pandas as pd
 import numpy as np
-import yfinance as yf
-import plotly.graph_objects as go
+import threading
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 # ==========================================================
 # CONFIG
 # ==========================================================
-st.set_page_config(page_title="BTC Real-Time Engine PRO", layout="wide")
-st.title("🏦 BTC Real-Time Engine PRO (Institutional)")
-
-tz = ZoneInfo("America/Sao_Paulo")
-
-# 🔁 auto refresh (tempo real simulado)
-st.autorefresh(interval=60 * 1000, key="refresh")  # 60s
+st.set_page_config(page_title="BTC WebSocket Engine", layout="wide")
+st.title("🏦 BTC Real-Time WebSocket Engine (Binance)")
 
 # ==========================================================
-# SESSION STATE
+# STATE STORE (SHARED MEMORY)
 # ==========================================================
-if "signal_log" not in st.session_state:
-    st.session_state.signal_log = []
+if "price_data" not in st.session_state:
+    st.session_state.price_data = pd.DataFrame(columns=["time", "price"])
+
+if "last_price" not in st.session_state:
+    st.session_state.last_price = None
 
 # ==========================================================
-# DATA
+# WEBSOCKET THREAD
 # ==========================================================
-@st.cache_data(ttl=60)
-def load_data():
-
-    df = yf.download(
-        "BTC-USD",
-        period="30d",
-        interval="1h",   # 🔥 agora é base de 1 hora (mais real-time)
-        auto_adjust=True,
-        progress=False
-    )
-
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
-    df = df.reset_index()
-
-    # ======================================================
-    # 🔥 FIX DEFINITIVO DE FUSO HORÁRIO
-    # ======================================================
-    df["Datetime"] = pd.to_datetime(df["Datetime"], utc=True)
-    df["Datetime"] = df["Datetime"].dt.tz_convert("America/Sao_Paulo")
-    df["Datetime"] = df["Datetime"].dt.tz_localize(None)
-
-    return df
+BINANCE_WS = "wss://stream.binance.com:9443/ws/btcusdt@trade"
 
 
-df = load_data()
+def run_ws():
 
-if df.empty:
-    st.error("Sem dados")
+    async def listen():
+
+        async with websockets.connect(BINANCE_WS) as ws:
+            while True:
+                msg = await ws.recv()
+                data = json.loads(msg)
+
+                price = float(data["p"])
+                time = datetime.now()
+
+                st.session_state.last_price = price
+
+                new_row = pd.DataFrame([{
+                    "time": time,
+                    "price": price
+                }])
+
+                st.session_state.price_data = pd.concat(
+                    [st.session_state.price_data, new_row],
+                    ignore_index=True
+                ).tail(500)
+
+    asyncio.run(listen())
+
+
+# start thread once
+if "ws_started" not in st.session_state:
+    thread = threading.Thread(target=run_ws, daemon=True)
+    thread.start()
+    st.session_state.ws_started = True
+
+# ==========================================================
+# INDICATORS (REAL TIME BUFFER)
+# ==========================================================
+df = st.session_state.price_data.copy()
+
+if len(df) < 50:
+    st.info("Aguardando fluxo de mercado...")
     st.stop()
 
-# ==========================================================
-# INDICADORES
-# ==========================================================
+
 def ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
 
 
-def rsi(series, period=14):
-    delta = series.diff()
+df["EMA50"] = ema(df["price"], 50)
 
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
+price = df["price"].iloc[-1]
+ema50 = df["EMA50"].iloc[-1]
 
-    avg_gain = pd.Series(gain).rolling(period).mean()
-    avg_loss = pd.Series(loss).rolling(period).mean()
-
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-
-df["EMA169"] = ema(df["Close"], 169)
-df["RSI"] = rsi(df["Close"], 14)
-
-df = df.dropna()
+trend_ok = price > ema50
 
 # ==========================================================
-# STATE
+# SIGNAL ENGINE
 # ==========================================================
-price = float(df["Close"].iloc[-1])
-ema169 = float(df["EMA169"].iloc[-1])
-rsi_now = float(df["RSI"].iloc[-1])
-
-trend_ok = price > ema169
-
-# ==========================================================
-# SCORE ENGINE
-# ==========================================================
-trend_score = 60 if trend_ok else 0
-momentum_score = np.clip((40 - rsi_now) * 1.5, 0, 25)
-quality_score = 15 if rsi_now < 45 else 5 if rsi_now < 55 else 0
-
-score = trend_score + momentum_score + quality_score
-
-# ==========================================================
-# STATE MACHINE
-# ==========================================================
-if not trend_ok:
-    state = "BLOCKED"
-    signal = "⛔ BLOQUEADO (ABAIXO DA EMA 169)"
-
-elif score >= 75:
+if trend_ok:
     state = "LONG"
-    signal = "🟢 LONG SETUP CONFIRMADO"
-
-elif score >= 50:
-    state = "WAIT"
-    signal = "🟡 AGUARDAR CONFIRMAÇÃO"
-
+    signal = "🟢 FLOW BULLISH (ABOVE EMA50)"
 else:
-    state = "NO_TRADE"
-    signal = "🔴 SEM TRADE"
+    state = "BEAR"
+    signal = "🔴 FLOW BEARISH (BELOW EMA50)"
 
 # ==========================================================
-# LOG (TIME CORRIGIDO)
+# UI
 # ==========================================================
-last_state = st.session_state.signal_log[-1]["state"] if st.session_state.signal_log else None
+c1, c2 = st.columns(2)
 
-entry = {
-    "time": datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S"),
-    "price": price,
-    "ema169": ema169,
-    "rsi": rsi_now,
-    "score": score,
-    "state": state,
-    "signal": signal
-}
+c1.metric("BTC Live", f"${price:,.2f}")
+c2.metric("EMA 50 (Flow)", f"${ema50:,.2f}")
 
-if last_state != state:
-    st.session_state.signal_log.append(entry)
+st.divider()
 
-# ==========================================================
-# UI SIGNAL (SEGURO)
-# ==========================================================
 if state == "LONG":
     st.success(signal)
-
-elif state == "WAIT":
-    st.warning(signal)
-
 else:
     st.error(signal)
 
 # ==========================================================
-# METRICS
+# CHART REAL TIME
 # ==========================================================
-c1, c2, c3 = st.columns(3)
+st.subheader("📊 Real-Time Price Flow")
 
-c1.metric("BTC (1H)", f"${price:,.0f}")
-c2.metric("EMA 169", f"${ema169:,.0f}")
-c3.metric("Score", f"{score:.1f}/100")
-
-st.divider()
+st.line_chart(df.set_index("time")["price"])
 
 # ==========================================================
-# CHART REAL-TIME
+# DEBUG INFO
 # ==========================================================
-fig = go.Figure()
-
-fig.add_trace(go.Scatter(
-    x=df["Datetime"],
-    y=df["Close"],
-    name="BTC (1H)"
-))
-
-fig.add_trace(go.Scatter(
-    x=df["Datetime"],
-    y=df["EMA169"],
-    name="EMA 169"
-))
-
-fig.update_layout(height=650)
-
-st.plotly_chart(fig, use_container_width=True)
-
-# ==========================================================
-# HISTÓRICO
-# ==========================================================
-st.subheader("📊 Histórico de Sinais (Real-Time)")
-
-log_df = pd.DataFrame(st.session_state.signal_log)
-
-if not log_df.empty:
-    st.dataframe(log_df, use_container_width=True)
-else:
-    st.info("Sem histórico ainda.")
-
-# ==========================================================
-# RESUMO
-# ==========================================================
-st.subheader("Resumo Institucional")
-
 st.write({
-    "Preço": price,
-    "EMA169": ema169,
-    "RSI": rsi_now,
-    "Score": score,
-    "State": state,
-    "Timeframe": "1H Real-Time Simulado",
-    "Timezone": "America/Sao_Paulo"
+    "Last Update": datetime.now().strftime("%H:%M:%S"),
+    "Buffer Size": len(df),
+    "State": state
 })
