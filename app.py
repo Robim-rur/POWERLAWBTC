@@ -8,11 +8,11 @@ from datetime import datetime
 # ==========================================================
 # CONFIG
 # ==========================================================
-st.set_page_config(page_title="BTC Institutional Engine", layout="wide")
-st.title("🏦 BTC Signal Engine — Full Fixed Version")
+st.set_page_config(page_title="BTC Institutional Engine FIXED", layout="wide")
+st.title("🏦 BTC Signal Engine — Stable Full Version")
 
 # ==========================================================
-# SESSION STATE
+# LOG
 # ==========================================================
 if "log" not in st.session_state:
     st.session_state.log = []
@@ -32,7 +32,7 @@ def load_data():
 
     df = df.reset_index()
 
-    # normaliza nome da coluna de tempo
+    # normalização segura
     if "Datetime" not in df.columns:
         df.rename(columns={df.columns[0]: "Datetime"}, inplace=True)
 
@@ -55,10 +55,9 @@ def power_law(df):
 
     genesis = pd.Timestamp("2009-01-03")
 
-    # garante tipo 100% compatível
     dt = pd.to_datetime(df["Datetime"]).dt.tz_localize(None)
 
-    df["Days"] = (dt - genesis).dt.total_seconds() / 86400.0
+    df["Days"] = (dt - genesis).dt.total_seconds() / 86400
     df = df[df["Days"] > 0].copy()
 
     x = np.log10(df["Days"].values)
@@ -74,23 +73,30 @@ def power_law(df):
 df = power_law(df)
 
 # ==========================================================
-# INDICADORES
+# INDICATORS
 # ==========================================================
 def ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
 
 
 def rsi(series, period=14):
-    delta = series.diff()
 
-    gain = np.where(delta > 0, delta, 0)
-    loss = np.where(delta < 0, -delta, 0)
+    delta = series.diff().fillna(0)
 
-    avg_gain = pd.Series(gain).rolling(period).mean()
-    avg_loss = pd.Series(loss).rolling(period).mean()
+    gain = np.where(delta > 0, delta, 0).astype(float)
+    loss = np.where(delta < 0, -delta, 0).astype(float)
+
+    gain = pd.Series(gain)
+    loss = pd.Series(loss)
+
+    avg_gain = gain.rolling(period).mean()
+    avg_loss = loss.rolling(period).mean()
 
     rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
+
+    rsi = 100 - (100 / (1 + rs))
+
+    return rsi.fillna(0)
 
 
 df["EMA169"] = ema(df["Close"], 169)
@@ -152,7 +158,7 @@ if len(st.session_state.log) == 0 or st.session_state.log[-1]["state"] != state:
     st.session_state.log.append(entry)
 
 # ==========================================================
-# UI SIGNAL
+# UI
 # ==========================================================
 if state == "LONG":
     st.success(signal)
