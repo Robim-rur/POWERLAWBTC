@@ -13,7 +13,7 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("🏦 Bitcoin Power Law — Hedge Fund Engine")
+st.title("🏦 Bitcoin Power Law — Modelo Hedge Fund")
 
 # ==========================================================
 # PARAMETERS
@@ -56,7 +56,7 @@ def load_data():
 df = load_data()
 
 if df.empty:
-    st.error("No data loaded")
+    st.error("Nenhum dado carregado")
     st.stop()
 
 # ==========================================================
@@ -86,11 +86,11 @@ df = df.dropna().reset_index(drop=True)
 df["Date"] = pd.to_datetime(df["Date"])
 
 genesis = pd.Timestamp("2009-01-03")
-df["Days"] = (df["Date"] - genesis).dt.days.astype(float)
+df["Dias"] = (df["Date"] - genesis).dt.days.astype(float)
 
-df = df[df["Days"] > 0].copy()
+df = df[df["Dias"] > 0].copy()
 
-x = np.log10(df["Days"].to_numpy(dtype=float))
+x = np.log10(df["Dias"].to_numpy(dtype=float))
 y = np.log10(df["Close"].to_numpy(dtype=float))
 
 slope, intercept = np.polyfit(x, y, 1)
@@ -103,18 +103,18 @@ df["PowerLaw"] = 10 ** (intercept + slope * x)
 close = df["Close"].to_numpy(dtype=float)
 pl = df["PowerLaw"].to_numpy(dtype=float)
 
-df["PL_Distance"] = ((close / pl) - 1.0) * 100
+df["Distancia_PL"] = ((close / pl) - 1.0) * 100
 
 # ==========================================================
 # CURRENT STATE
 # ==========================================================
 current_price = close[-1]
 current_pl = pl[-1]
-current_distance = df["PL_Distance"].iloc[-1]
+current_distance = df["Distancia_PL"].iloc[-1]
 current_atr = df["ATR"].iloc[-1]
 
 current_percentile = percentileofscore(
-    df["PL_Distance"],
+    df["Distancia_PL"],
     current_distance
 )
 
@@ -125,8 +125,8 @@ c1, c2, c3, c4 = st.columns(4)
 
 c1.metric("BTC", f"${current_price:,.0f}")
 c2.metric("Power Law", f"${current_pl:,.0f}")
-c3.metric("Distance", f"{current_distance:.2f}%")
-c4.metric("Percentile", f"{current_percentile:.1f}")
+c3.metric("Distância", f"{current_distance:.2f}%")
+c4.metric("Percentil", f"{current_percentile:.1f}")
 
 st.divider()
 
@@ -136,29 +136,29 @@ st.divider()
 def regime(distance):
 
     if distance < -25:
-        return "DEEP VALUE ZONE"
+        return "ZONA DE DEEP VALUE"
     elif distance < 0:
-        return "BELOW FAIR VALUE"
+        return "ABAIXO DO VALOR JUSTO"
     elif distance < 25:
-        return "FAIR VALUE"
+        return "VALOR JUSTO"
     else:
-        return "OVEREXTENDED"
+        return "MUITO ESTICADO"
 
 
 regime_state = regime(current_distance)
 
-st.subheader(f"Market Regime: {regime_state}")
+st.subheader(f"Regime de Mercado: {regime_state}")
 
 # ==========================================================
 # SIMILARITY ENGINE (VECTOR APPROACH)
 # ==========================================================
 hist = df.iloc[:-1].copy()
 
-hist["sim"] = np.abs(hist["PL_Distance"] - current_distance)
+hist["similaridade"] = np.abs(hist["Distancia_PL"] - current_distance)
 
 sample_size = max(50, int(len(hist) * SIMILARITY_SAMPLE))
 
-similar = hist.nsmallest(sample_size, "sim")
+similar = hist.nsmallest(sample_size, "similaridade")
 
 # ==========================================================
 # MONTE CARLO ENGINE (REAL EDGE SIMULATION)
@@ -216,9 +216,9 @@ def engine(similar, df):
             continue
 
         results[mult] = {
-            "prob": np.mean(probs),
-            "ev": np.mean(probs) * mult - (1 - np.mean(probs)),
-            "samples": len(probs)
+            "probabilidade": np.mean(probs),
+            "valor_esperado": np.mean(probs) * mult - (1 - np.mean(probs)),
+            "amostras": len(probs)
         }
 
     return results
@@ -226,14 +226,14 @@ def engine(similar, df):
 
 results = engine(similar, df)
 
-best = max(results.items(), key=lambda x: x[1]["ev"])
+best = max(results.items(), key=lambda x: x[1]["valor_esperado"])
 
-st.success(f"Best: +{best[0]} ATR | EV {best[1]['ev']:.3f}")
+st.success(f"Melhor cenário: +{best[0]} ATR | EV {best[1]['valor_esperado']:.3f}")
 
 # ==========================================================
 # SCORE SYSTEM (INSTITUTIONAL)
 # ==========================================================
-ev_mean = np.mean([r["ev"] for r in results.values()])
+ev_mean = np.mean([r["valor_esperado"] for r in results.values()])
 
 score = (
     min(max(ev_mean * 30, 0), 100) * 0.5 +
@@ -241,17 +241,17 @@ score = (
     max(0, 100 - current_percentile) * 0.2
 )
 
-st.metric("Hedge Fund Score", f"{score:.1f}/100")
+st.metric("Score Hedge Fund", f"{score:.1f}/100")
 
 # ==========================================================
 # SIGNAL ENGINE
 # ==========================================================
 if score > 75 and ev_mean > 0:
-    st.success("🟢 INSTITUTIONAL BUY ZONE")
+    st.success("🟢 ZONA INSTITUCIONAL DE COMPRA")
 elif score > 50:
-    st.warning("🟡 NEUTRAL RISK")
+    st.warning("🟡 ZONA NEUTRA")
 else:
-    st.error("🔴 RISK OFF")
+    st.error("🔴 ZONA DE RISCO (OFF)")
 
 # ==========================================================
 # CHARTS
@@ -268,12 +268,12 @@ st.plotly_chart(fig, use_container_width=True)
 # ==========================================================
 # FINAL SUMMARY
 # ==========================================================
-st.subheader("Institutional Summary")
+st.subheader("Resumo Institucional")
 
 st.write({
-    "Price": current_price,
+    "Preço": current_price,
     "Power Law": current_pl,
-    "Distance": current_distance,
+    "Distância": current_distance,
     "Regime": regime_state,
     "Score": score
 })
