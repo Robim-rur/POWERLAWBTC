@@ -9,12 +9,11 @@ from scipy.stats import percentileofscore
 # CONFIG
 # ==========================================================
 st.set_page_config(page_title="BTC Institutional Engine", layout="wide")
-st.title("🏦 BTC Power Law + Swing Trade Institutional Engine")
+st.title("🏦 BTC Power Law + Institutional Swing Engine")
 
 ATR_PERIOD = 14
 MC_SIMULATIONS = 200
 MAX_DAYS = 90
-SIMILARITY_SAMPLE = 0.10
 
 # ==========================================================
 # DATA
@@ -80,9 +79,8 @@ def stochastic_rsi(rsi_series, k=3, d=3):
 
     stoch = (rsi_series - min_rsi) / (max_rsi - min_rsi)
     k_line = stoch.rolling(k).mean()
-    d_line = k_line.rolling(d).mean()
 
-    return k_line, d_line
+    return k_line
 
 
 def adx(df, period=14):
@@ -112,14 +110,13 @@ def adx(df, period=14):
 
     return adx_val, plus_di, minus_di
 
-
 # ==========================================================
 # FEATURES
 # ==========================================================
 df["ATR"] = atr(df, ATR_PERIOD)
-df["EMA69"] = ema(df["Close"], 69)
+df["EMA169"] = ema(df["Close"], 169)
 df["RSI"] = rsi(df["Close"], 14)
-df["STOCH_K"], df["STOCH_D"] = stochastic_rsi(df["RSI"])
+df["STOCH_K"] = stochastic_rsi(df["RSI"])
 df["ADX"], df["DI+"], df["DI-"] = adx(df)
 df["VOL_MA20"] = df["Volume"].rolling(20).mean()
 
@@ -143,7 +140,7 @@ df["PowerLaw"] = 10 ** (intercept + slope * x)
 df["PL_Distance"] = ((df["Close"] / df["PowerLaw"]) - 1) * 100
 
 # ==========================================================
-# CURRENT STATE
+# STATE
 # ==========================================================
 price = df["Close"].iloc[-1]
 pl = df["PowerLaw"].iloc[-1]
@@ -155,7 +152,7 @@ adx_now = df["ADX"].iloc[-1]
 di_plus = df["DI+"].iloc[-1]
 di_minus = df["DI-"].iloc[-1]
 
-ema69 = df["EMA69"].iloc[-1]
+ema169 = df["EMA169"].iloc[-1]
 
 vol = df["Volume"].iloc[-1]
 vol_ma = df["VOL_MA20"].iloc[-1]
@@ -174,32 +171,26 @@ def regime(dist):
         return "FAIR VALUE"
     return "OVEREXTENDED"
 
-
 reg = regime(dist)
 
 # ==========================================================
-# HARD FILTER (OBRIGATÓRIO)
+# HARD FILTER
 # ==========================================================
 trend_filter = (
-    price > ema69 and
+    price > ema169 and
     adx_now > 20 and
     di_plus > di_minus
 )
 
 # ==========================================================
-# SCORE (0–100 CORRIGIDO)
+# SCORE (CORRIGIDO 0–100 REAL)
 # ==========================================================
-trend_score = 1 if trend_filter else 0
-momentum_score = 1 if (rsi_now < 40 and stoch_k < 0.2) else 0
-value_score = max(0, 1 - abs(dist) / 100)
-volume_score = 1 if vol > vol_ma else 0
+trend_score = 35 if trend_filter else 0
+momentum_score = 25 if (rsi_now < 40 and stoch_k < 0.2) else 0
+value_score = max(0, 25 * (1 - abs(dist) / 100))
+volume_score = 15 if vol > vol_ma else 0
 
-score = (
-    trend_score * 35 +
-    momentum_score * 25 +
-    value_score * 25 +
-    volume_score * 15
-) * 100
+score = trend_score + momentum_score + value_score + volume_score
 
 # ==========================================================
 # DISPLAY
@@ -212,24 +203,26 @@ c3.metric("Distância", f"{dist:.2f}%")
 c4.metric("Score", f"{score:.1f}/100")
 
 st.divider()
-
 st.subheader(f"Regime: {reg}")
 
 # ==========================================================
-# SIGNAL ENGINE (CORRIGIDO)
+# SIGNAL
 # ==========================================================
 if not trend_filter:
-    signal = "🔴 BLOQUEADO (ABAIXO DA TENDÊNCIA)"
+    signal = "🔴 BLOQUEADO (TENDÊNCIA FRACA)"
+    st.error(signal)
+
 elif score > 75:
     signal = "🟢 LONG SETUP CONFIRMADO"
+    st.success(signal)
+
 elif score > 50:
     signal = "🟡 AGUARDAR CONFIRMAÇÃO"
+    st.warning(signal)
+
 else:
     signal = "🔴 SEM TRADE"
-
-st.success(signal) if "CONFIRMADO" in signal else \
-st.warning(signal) if "AGUARDAR" in signal else \
-st.error(signal)
+    st.error(signal)
 
 # ==========================================================
 # CHART
@@ -237,7 +230,7 @@ st.error(signal)
 fig = go.Figure()
 
 fig.add_trace(go.Scatter(x=df["Date"], y=df["Close"], name="BTC"))
-fig.add_trace(go.Scatter(x=df["Date"], y=df["EMA69"], name="EMA 69"))
+fig.add_trace(go.Scatter(x=df["Date"], y=df["EMA169"], name="EMA 169"))
 fig.add_trace(go.Scatter(x=df["Date"], y=df["PowerLaw"], name="Power Law"))
 
 fig.update_layout(height=600, yaxis_type="log")
