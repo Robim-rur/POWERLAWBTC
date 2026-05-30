@@ -9,20 +9,19 @@ from datetime import datetime
 # CONFIG
 # ==========================================================
 st.set_page_config(page_title="BTC Institutional Engine", layout="wide")
-st.title("🏦 BTC Signal Engine — Stable Production Version")
+st.title("🏦 BTC Signal Engine — Final Stable Version")
 
 # ==========================================================
-# LOG STATE
+# STATE
 # ==========================================================
 if "log" not in st.session_state:
     st.session_state.log = []
 
 # ==========================================================
-# DATA LOADER (ROBUSTO)
+# DATA
 # ==========================================================
 @st.cache_data(ttl=10)
 def load_data():
-
     df = yf.download(
         "BTC-USD",
         period="7d",
@@ -33,18 +32,12 @@ def load_data():
 
     df = df.reset_index()
 
-    # normaliza nome da coluna de tempo
     if "Datetime" not in df.columns:
         df.rename(columns={df.columns[0]: "Datetime"}, inplace=True)
 
     df["Datetime"] = pd.to_datetime(df["Datetime"])
 
-    # ======================================================
-    # 🔥 FIX CRÍTICO: garante Close 1D (erro que você teve)
-    # ======================================================
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-
+    # garante 1D seguro
     df["Close"] = np.array(df["Close"]).reshape(-1)
 
     return df
@@ -53,21 +46,21 @@ def load_data():
 df = load_data()
 
 if df.empty:
-    st.error("Sem dados disponíveis")
+    st.error("Sem dados")
     st.stop()
 
 # ==========================================================
-# POWER LAW (BLINDADO)
+# POWER LAW (FIX DEFINITIVO)
 # ==========================================================
 def power_law(df):
-
     df = df.copy()
 
     genesis = pd.Timestamp("2009-01-03")
 
     dt = pd.to_datetime(df["Datetime"])
 
-    df["Days"] = (dt - genesis).dt.total_seconds() / 86400.0
+    # 🔥 SEM SUBTRAÇÃO DIRETA DE DATETIME (100% ESTÁVEL)
+    df["Days"] = (dt.astype("int64") - genesis.value) / 86400e9
 
     df = df[df["Days"] > 0].copy()
 
@@ -92,7 +85,6 @@ def ema(series, period):
 
 def rsi(series, period=14):
 
-    # 🔥 força array 1D absoluto
     series = np.array(series).reshape(-1)
 
     delta = np.diff(series, prepend=series[0])
@@ -172,7 +164,7 @@ if len(st.session_state.log) == 0 or st.session_state.log[-1]["state"] != state:
     st.session_state.log.append(entry)
 
 # ==========================================================
-# UI SIGNAL
+# UI
 # ==========================================================
 if state == "LONG":
     st.success(signal)
