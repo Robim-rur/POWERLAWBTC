@@ -8,20 +8,21 @@ from datetime import datetime
 # ==========================================================
 # CONFIG
 # ==========================================================
-st.set_page_config(page_title="BTC Institutional Engine FIXED", layout="wide")
-st.title("🏦 BTC Signal Engine — Stable Full Version")
+st.set_page_config(page_title="BTC Institutional Engine", layout="wide")
+st.title("🏦 BTC Signal Engine — Stable Production Version")
 
 # ==========================================================
-# LOG
+# LOG STATE
 # ==========================================================
 if "log" not in st.session_state:
     st.session_state.log = []
 
 # ==========================================================
-# DATA
+# DATA LOADER (ROBUSTO)
 # ==========================================================
 @st.cache_data(ttl=10)
 def load_data():
+
     df = yf.download(
         "BTC-USD",
         period="7d",
@@ -32,11 +33,19 @@ def load_data():
 
     df = df.reset_index()
 
-    # normalização segura
+    # normaliza nome da coluna de tempo
     if "Datetime" not in df.columns:
         df.rename(columns={df.columns[0]: "Datetime"}, inplace=True)
 
-    df["Datetime"] = pd.to_datetime(df["Datetime"]).dt.tz_localize(None)
+    df["Datetime"] = pd.to_datetime(df["Datetime"])
+
+    # ======================================================
+    # 🔥 FIX CRÍTICO: garante Close 1D (erro que você teve)
+    # ======================================================
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
+    df["Close"] = np.array(df["Close"]).reshape(-1)
 
     return df
 
@@ -48,16 +57,18 @@ if df.empty:
     st.stop()
 
 # ==========================================================
-# POWER LAW (FIX DEFINITIVO)
+# POWER LAW (BLINDADO)
 # ==========================================================
 def power_law(df):
+
     df = df.copy()
 
     genesis = pd.Timestamp("2009-01-03")
 
-    dt = pd.to_datetime(df["Datetime"]).dt.tz_localize(None)
+    dt = pd.to_datetime(df["Datetime"])
 
-    df["Days"] = (dt - genesis).dt.total_seconds() / 86400
+    df["Days"] = (dt - genesis).dt.total_seconds() / 86400.0
+
     df = df[df["Days"] > 0].copy()
 
     x = np.log10(df["Days"].values)
@@ -73,15 +84,18 @@ def power_law(df):
 df = power_law(df)
 
 # ==========================================================
-# INDICATORS
+# INDICADORES
 # ==========================================================
 def ema(series, period):
-    return series.ewm(span=period, adjust=False).mean()
+    return pd.Series(series).ewm(span=period, adjust=False).mean()
 
 
 def rsi(series, period=14):
 
-    delta = series.diff().fillna(0)
+    # 🔥 força array 1D absoluto
+    series = np.array(series).reshape(-1)
+
+    delta = np.diff(series, prepend=series[0])
 
     gain = np.where(delta > 0, delta, 0).astype(float)
     loss = np.where(delta < 0, -delta, 0).astype(float)
@@ -158,7 +172,7 @@ if len(st.session_state.log) == 0 or st.session_state.log[-1]["state"] != state:
     st.session_state.log.append(entry)
 
 # ==========================================================
-# UI
+# UI SIGNAL
 # ==========================================================
 if state == "LONG":
     st.success(signal)
