@@ -8,55 +8,52 @@ from scipy.stats import percentileofscore
 # ==========================================================
 # CONFIG
 # ==========================================================
-st.set_page_config(page_title="BTC Institutional Engine", layout="wide")
-st.title("🏦 BTC Power Law + Institutional Swing Engine")
-
-ATR_PERIOD = 14
-MC_SIMULATIONS = 200
-MAX_DAYS = 90
+st.set_page_config(page_title="BTC Multi-Timeframe Engine", layout="wide")
+st.title("🏦 BTC Multi-Timeframe Institutional Engine")
 
 # ==========================================================
-# DATA
+# DATA (DIÁRIO + 4H)
 # ==========================================================
 @st.cache_data(ttl=3600)
 def load_data():
-    df = yf.download("BTC-USD", start="2010-07-17", auto_adjust=True, progress=False)
 
-    if df is None or len(df) == 0:
-        return pd.DataFrame()
+    daily = yf.download(
+        "BTC-USD",
+        start="2010-07-17",
+        interval="1d",
+        auto_adjust=True,
+        progress=False
+    )
 
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
+    h4 = yf.download(
+        "BTC-USD",
+        period="60d",
+        interval="4h",
+        auto_adjust=True,
+        progress=False
+    )
 
-    df.reset_index(inplace=True)
-    df.rename(columns={df.columns[0]: "Date"}, inplace=True)
+    if isinstance(daily.columns, pd.MultiIndex):
+        daily.columns = daily.columns.get_level_values(0)
 
-    return df
+    if isinstance(h4.columns, pd.MultiIndex):
+        h4.columns = h4.columns.get_level_values(0)
+
+    daily.reset_index(inplace=True)
+    h4.reset_index(inplace=True)
+
+    return daily, h4
 
 
-df = load_data()
+daily, h4 = load_data()
 
-if df.empty:
+if daily.empty or h4.empty:
     st.error("Sem dados")
     st.stop()
 
 # ==========================================================
 # INDICADORES
 # ==========================================================
-def atr(df, period=14):
-    high = df["High"]
-    low = df["Low"]
-    close = df["Close"]
-
-    tr = pd.concat([
-        high - low,
-        (high - close.shift()).abs(),
-        (low - close.shift()).abs()
-    ], axis=1).max(axis=1)
-
-    return tr.rolling(period).mean()
-
-
 def ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
 
@@ -79,7 +76,6 @@ def stochastic_rsi(rsi_series, k=3, d=3):
 
     stoch = (rsi_series - min_rsi) / (max_rsi - min_rsi)
     k_line = stoch.rolling(k).mean()
-
     return k_line
 
 
@@ -106,136 +102,81 @@ def adx(df, period=14):
     minus_di = 100 * (pd.Series(minus_dm).rolling(period).mean() / atr_val)
 
     dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
-    adx_val = dx.rolling(period).mean()
+    return dx.rolling(period).mean(), plus_di, minus_di
 
-    return adx_val, plus_di, minus_di
-
-# ==========================================================
-# FEATURES
-# ==========================================================
-df["ATR"] = atr(df, ATR_PERIOD)
-df["EMA169"] = ema(df["Close"], 169)
-df["RSI"] = rsi(df["Close"], 14)
-df["STOCH_K"] = stochastic_rsi(df["RSI"])
-df["ADX"], df["DI+"], df["DI-"] = adx(df)
-df["VOL_MA20"] = df["Volume"].rolling(20).mean()
-
-df = df.dropna().reset_index(drop=True)
 
 # ==========================================================
-# POWER LAW
+# ================= DAILY FRAME ============================
 # ==========================================================
-df["Date"] = pd.to_datetime(df["Date"])
-genesis = pd.Timestamp("2009-01-03")
+daily["EMA169"] = ema(daily["Close"], 169)
+daily["RSI"] = rsi(daily["Close"], 14)
+daily["ADX"], daily["DI+"], daily["DI-"] = adx(daily)
 
-df["Days"] = (df["Date"] - genesis).dt.days.astype(float)
-df = df[df["Days"] > 0].copy()
+daily = daily.dropna().reset_index(drop=True)
 
-x = np.log10(df["Days"].to_numpy())
-y = np.log10(df["Close"].to_numpy())
+price_d = daily["Close"].iloc[-1]
+ema_d = daily["EMA169"].iloc[-1]
+adx_d = daily["ADX"].iloc[-1]
+di_plus_d = daily["DI+"].iloc[-1]
+di_minus_d = daily["DI-"].iloc[-1]
 
-slope, intercept = np.polyfit(x, y, 1)
-df["PowerLaw"] = 10 ** (intercept + slope * x)
-
-df["PL_Distance"] = ((df["Close"] / df["PowerLaw"]) - 1) * 100
-
-# ==========================================================
-# STATE
-# ==========================================================
-price = df["Close"].iloc[-1]
-pl = df["PowerLaw"].iloc[-1]
-dist = df["PL_Distance"].iloc[-1]
-
-rsi_now = df["RSI"].iloc[-1]
-stoch_k = df["STOCH_K"].iloc[-1]
-adx_now = df["ADX"].iloc[-1]
-di_plus = df["DI+"].iloc[-1]
-di_minus = df["DI-"].iloc[-1]
-
-ema169 = df["EMA169"].iloc[-1]
-
-vol = df["Volume"].iloc[-1]
-vol_ma = df["VOL_MA20"].iloc[-1]
-
-percentile = percentileofscore(df["PL_Distance"], dist)
-
-# ==========================================================
-# REGIME
-# ==========================================================
-def regime(dist):
-    if dist < -25:
-        return "DEEP VALUE ZONE"
-    elif dist < 0:
-        return "BELOW FAIR VALUE"
-    elif dist < 25:
-        return "FAIR VALUE"
-    return "OVEREXTENDED"
-
-reg = regime(dist)
-
-# ==========================================================
-# HARD FILTER
-# ==========================================================
-trend_filter = (
-    price > ema169 and
-    adx_now > 20 and
-    di_plus > di_minus
+daily_trend = (
+    price_d > ema_d and
+    adx_d > 20 and
+    di_plus_d > di_minus_d
 )
 
 # ==========================================================
-# SCORE (CORRIGIDO 0–100 REAL)
+# ================= 4H FRAME ===============================
 # ==========================================================
-trend_score = 35 if trend_filter else 0
-momentum_score = 25 if (rsi_now < 40 and stoch_k < 0.2) else 0
-value_score = max(0, 25 * (1 - abs(dist) / 100))
-volume_score = 15 if vol > vol_ma else 0
+h4["RSI"] = rsi(h4["Close"], 14)
+h4["STOCH_K"] = stochastic_rsi(h4["RSI"])
+h4["VOL_MA20"] = h4["Volume"].rolling(20).mean()
 
-score = trend_score + momentum_score + value_score + volume_score
+h4 = h4.dropna().reset_index(drop=True)
+
+price_h = h4["Close"].iloc[-1]
+rsi_h = h4["RSI"].iloc[-1]
+stoch_h = h4["STOCH_K"].iloc[-1]
+vol_h = h4["Volume"].iloc[-1]
+vol_ma_h = h4["VOL_MA20"].iloc[-1]
+
+entry_signal = (
+    rsi_h < 40 and
+    stoch_h < 0.2 and
+    vol_h > vol_ma_h
+)
 
 # ==========================================================
-# DISPLAY
+# SCORE FINAL
 # ==========================================================
-c1, c2, c3, c4 = st.columns(4)
+trend_score = 60 if daily_trend else 0
+entry_score = 40 if entry_signal else 0
 
-c1.metric("BTC", f"${price:,.0f}")
-c2.metric("Power Law", f"${pl:,.0f}")
-c3.metric("Distância", f"{dist:.2f}%")
-c4.metric("Score", f"{score:.1f}/100")
+score = trend_score + entry_score
+
+# ==========================================================
+# UI
+# ==========================================================
+c1, c2, c3 = st.columns(3)
+
+c1.metric("BTC Diário", f"${price_d:,.0f}")
+c2.metric("EMA 169", f"${ema_d:,.0f}")
+c3.metric("Score", f"{score}/100")
 
 st.divider()
-st.subheader(f"Regime: {reg}")
 
 # ==========================================================
-# SIGNAL
+# SIGNAL ENGINE
 # ==========================================================
-if not trend_filter:
-    signal = "🔴 BLOQUEADO (TENDÊNCIA FRACA)"
-    st.error(signal)
+if not daily_trend:
+    st.error("🔴 SEM TENDÊNCIA (DIÁRIO NEGATIVO)")
 
-elif score > 75:
-    signal = "🟢 LONG SETUP CONFIRMADO"
-    st.success(signal)
-
-elif score > 50:
-    signal = "🟡 AGUARDAR CONFIRMAÇÃO"
-    st.warning(signal)
+elif not entry_signal:
+    st.warning("🟡 TENDÊNCIA OK — AGUARDAR ENTRADA (4H)")
 
 else:
-    signal = "🔴 SEM TRADE"
-    st.error(signal)
-
-# ==========================================================
-# CHART
-# ==========================================================
-fig = go.Figure()
-
-fig.add_trace(go.Scatter(x=df["Date"], y=df["Close"], name="BTC"))
-fig.add_trace(go.Scatter(x=df["Date"], y=df["EMA169"], name="EMA 169"))
-fig.add_trace(go.Scatter(x=df["Date"], y=df["PowerLaw"], name="Power Law"))
-
-fig.update_layout(height=600, yaxis_type="log")
-
-st.plotly_chart(fig, use_container_width=True)
+    st.success("🟢 LONG SETUP CONFIRMADO (MULTI-TF)")
 
 # ==========================================================
 # SUMMARY
@@ -243,13 +184,9 @@ st.plotly_chart(fig, use_container_width=True)
 st.subheader("Resumo Institucional")
 
 st.write({
-    "Preço": price,
-    "Power Law": pl,
-    "Distância": dist,
-    "RSI": rsi_now,
-    "Stoch RSI": stoch_k,
-    "ADX": adx_now,
-    "Regime": reg,
+    "Trend Diário": bool(daily_trend),
+    "Entry 4H": bool(entry_signal),
     "Score": score,
-    "Filtro Tendência": bool(trend_filter)
+    "RSI 4H": rsi_h,
+    "Stoch 4H": stoch_h
 })
