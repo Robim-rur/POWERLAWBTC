@@ -83,7 +83,7 @@ def calculate_atr(data, period=14):
 df["ATR"] = calculate_atr(df, ATR_PERIOD)
 
 # ==========================================================
-# POWER LAW (VERSÃO À PROVA DE ERROS STREAMLIT)
+# POWER LAW (VERSÃO FINAL - ZERO ERRO STREAMLIT)
 # ==========================================================
 
 df = df.copy()
@@ -96,18 +96,21 @@ df["Days"] = (df["Date"] - genesis).dt.days.astype(float)
 
 df = df[df["Days"] > 0].copy()
 
-x = df["Days"].to_numpy(dtype=float)
-y = df["Close"].to_numpy(dtype=float)
+# 🔥 GARANTE 100% ARRAY 1D (CORREÇÃO DEFINITIVA)
+x = df["Days"].to_numpy().reshape(-1).astype(float)
+y = df["Close"].to_numpy().reshape(-1).astype(float)
 
-log_x = np.log10(x)
-log_y = np.log10(y)
+log_x = np.log10(x).reshape(-1)
+log_y = np.log10(y).reshape(-1)
 
+# regressão log-log
 slope, intercept = np.polyfit(log_x, log_y, 1)
 
-power_law_values = 10 ** (intercept + slope * log_x)
+# Power Law
+power_law = 10 ** (intercept + slope * log_x)
 
-# 🔥 FORÇA SERIES PURA (mata erro do pandas)
-df["PowerLaw"] = power_law_values.astype(float)
+# 🔥 FORÇA 1D ABSOLUTO (mata erro do pandas)
+df["PowerLaw"] = np.asarray(power_law, dtype=float).flatten()
 
 df["Close"] = df["Close"].astype(float)
 
@@ -120,19 +123,13 @@ df["PL_Distance"] = (
 ) * 100
 
 # ==========================================================
-# DISTÂNCIA DA POWER LAW
+# DISTÂNCIA POWER LAW (VERSÃO SEGURA DEFINITIVA)
 # ==========================================================
 
-df["PL_Distance"] = (
-    (df["Close"] / df["PowerLaw"]) - 1
-) * 100
+pl = df["PowerLaw"].to_numpy(dtype=float).flatten()
+price = df["Close"].to_numpy(dtype=float).flatten()
 
-current_row = df.iloc[-1]
-
-current_price = float(current_row["Close"])
-current_powerlaw = float(current_row["PowerLaw"])
-current_distance = float(current_row["PL_Distance"])
-current_atr = float(current_row["ATR"])
+df["PL_Distance"] = ((price / pl) - 1.0) * 100
 
 # ==========================================================
 # PERCENTIL HISTÓRICO
