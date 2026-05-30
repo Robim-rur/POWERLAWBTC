@@ -4,15 +4,19 @@ import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # ==========================================================
 # CONFIG
 # ==========================================================
 st.set_page_config(page_title="BTC Signal Engine v2", layout="wide")
-st.title("🏦 BTC Signal Engine v2 — Institutional Grade (FIXED)")
+st.title("🏦 BTC Signal Engine v2 — Institutional Grade (TIMEZONE FIX)")
+
+# timezone Brasil
+tz = ZoneInfo("America/Sao_Paulo")
 
 # ==========================================================
-# SESSION STATE (HISTÓRICO)
+# SESSION STATE
 # ==========================================================
 if "signal_log" not in st.session_state:
     st.session_state.signal_log = []
@@ -34,6 +38,12 @@ def load_data():
         df.columns = df.columns.get_level_values(0)
 
     df.reset_index(inplace=True)
+
+    # ======================================================
+    # FIX TIMEZONE (remove offset/shift)
+    # ======================================================
+    df["Date"] = pd.to_datetime(df["Date"]).dt.tz_localize(None)
+
     return df
 
 
@@ -44,7 +54,7 @@ if df.empty:
     st.stop()
 
 # ==========================================================
-# POWER LAW (RESTORED CORRECTLY)
+# POWER LAW
 # ==========================================================
 def power_law(df):
     df = df.copy()
@@ -103,7 +113,7 @@ pl = float(df["PowerLaw"].iloc[-1])
 trend_ok = price > ema169
 
 # ==========================================================
-# SCORE ENGINE (ESTÁVEL)
+# SCORE
 # ==========================================================
 trend_score = 60 if trend_ok else 0
 momentum_score = np.clip((40 - rsi_now) * 1.5, 0, 25)
@@ -131,12 +141,12 @@ else:
     signal = "🔴 SEM TRADE"
 
 # ==========================================================
-# LOG (HISTÓRICO)
+# LOG (TIMEZONE FIX AQUI)
 # ==========================================================
 last = st.session_state.signal_log[-1]["state"] if st.session_state.signal_log else None
 
 entry = {
-    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    "time": datetime.now(tz).strftime("%Y-%m-%d %H:%M:%S"),
     "price": price,
     "ema169": ema169,
     "rsi": rsi_now,
@@ -149,7 +159,7 @@ if last != state:
     st.session_state.signal_log.append(entry)
 
 # ==========================================================
-# UI SIGNAL (CORRIGIDO - SEM DELTAGENERATOR BUG)
+# UI SIGNAL (CORRIGIDO)
 # ==========================================================
 if state == "LONG":
     st.success(signal)
@@ -173,7 +183,7 @@ c4.metric("Score", f"{score:.1f}/100")
 st.divider()
 
 # ==========================================================
-# CHART (POWER LAW GARANTIDO)
+# CHART
 # ==========================================================
 fig = go.Figure()
 
@@ -189,7 +199,6 @@ fig.add_trace(go.Scatter(
     name="EMA 169"
 ))
 
-# 🔥 POWER LAW RESTAURADO (GARANTIDO NO GRÁFICO)
 fig.add_trace(go.Scatter(
     x=df["Date"],
     y=df["PowerLaw"],
@@ -210,13 +219,6 @@ log_df = pd.DataFrame(st.session_state.signal_log)
 
 if not log_df.empty:
     st.dataframe(log_df, use_container_width=True)
-
-    st.download_button(
-        "📥 Baixar histórico",
-        log_df.to_csv(index=False),
-        file_name="signal_log.csv",
-        mime="text/csv"
-    )
 else:
     st.info("Sem histórico ainda.")
 
@@ -231,5 +233,6 @@ st.write({
     "Power Law": pl,
     "RSI": rsi_now,
     "Score": score,
-    "State": state
+    "State": state,
+    "Timezone": "America/Sao_Paulo"
 })
