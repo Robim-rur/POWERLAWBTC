@@ -4,293 +4,276 @@ import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
 from scipy.stats import percentileofscore
-from datetime import datetime
 
+# ==========================================================
+# APP CONFIG
+# ==========================================================
 st.set_page_config(
-    page_title="Bitcoin Power Law ATR Probability",
+    page_title="BTC Power Law Hedge Fund Model",
     layout="wide"
 )
 
-st.title("₿ Bitcoin Power Law + ATR Probability")
-
-st.markdown("""
-Este aplicativo calcula:
-
-- Power Law do Bitcoin
-- Distância atual da Power Law
-- Percentil histórico
-- ATR(14)
-- Probabilidade de atingir alvos em ATR
-- Expectativa Matemática (EV)
-- Tempo médio até atingir alvo
-""")
+st.title("🏦 Bitcoin Power Law — Hedge Fund Engine")
 
 # ==========================================================
-# CONFIGURAÇÕES
+# PARAMETERS
 # ==========================================================
 ATR_PERIOD = 14
-SIMILAR_PERCENT = 0.10
-MAX_FORWARD_DAYS = 90
+SIMILARITY_SAMPLE = 0.10
+MC_SIMULATIONS = 200
+MAX_DAYS = 90
 
 # ==========================================================
-# DOWNLOAD DOS DADOS (BULLETPROOF)
+# DATA ENGINE (BULLETPROOF)
 # ==========================================================
 @st.cache_data(ttl=3600)
 def load_data():
 
-    btc = yf.download(
+    df = yf.download(
         "BTC-USD",
         start="2010-07-17",
         auto_adjust=True,
         progress=False
     )
 
-    btc = btc.dropna()
+    if df is None or len(df) == 0:
+        return pd.DataFrame()
 
-    btc = btc.copy()
+    df = df.copy()
 
-    # FIX CRÍTICO: garante coluna Date sempre
-    btc.reset_index(inplace=True)
+    # flatten multiindex
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
 
-    if "Date" not in btc.columns:
-        btc.rename(columns={btc.columns[0]: "Date"}, inplace=True)
+    df.reset_index(inplace=True)
 
-    return btc
+    if "Date" not in df.columns:
+        df.rename(columns={df.columns[0]: "Date"}, inplace=True)
+
+    return df
 
 
 df = load_data()
 
+if df.empty:
+    st.error("No data loaded")
+    st.stop()
+
 # ==========================================================
-# ATR
+# ATR ENGINE
 # ==========================================================
-def calculate_atr(data, period=14):
+def atr(df, period=14):
 
-    high = data["High"]
-    low = data["Low"]
-    close = data["Close"]
+    high = df["High"]
+    low = df["Low"]
+    close = df["Close"]
 
-    tr1 = high - low
-    tr2 = (high - close.shift()).abs()
-    tr3 = (low - close.shift()).abs()
-
-    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    tr = pd.concat([
+        high - low,
+        (high - close.shift()).abs(),
+        (low - close.shift()).abs()
+    ], axis=1).max(axis=1)
 
     return tr.rolling(period).mean()
 
 
-df["ATR"] = calculate_atr(df, ATR_PERIOD)
-
+df["ATR"] = atr(df, ATR_PERIOD)
 df = df.dropna().reset_index(drop=True)
 
 # ==========================================================
-# POWER LAW
+# POWER LAW MODEL (LOG REGRESSION)
 # ==========================================================
-df = df.copy()
-
 df["Date"] = pd.to_datetime(df["Date"])
 
 genesis = pd.Timestamp("2009-01-03")
-
 df["Days"] = (df["Date"] - genesis).dt.days.astype(float)
 
 df = df[df["Days"] > 0].copy()
 
-x = df["Days"].to_numpy(dtype=float)
-y = df["Close"].to_numpy(dtype=float)
+x = np.log10(df["Days"].to_numpy(dtype=float))
+y = np.log10(df["Close"].to_numpy(dtype=float))
 
-log_x = np.log10(x)
-log_y = np.log10(y)
+slope, intercept = np.polyfit(x, y, 1)
 
-slope, intercept = np.polyfit(log_x, log_y, 1)
-
-df["PowerLaw"] = 10 ** (intercept + slope * log_x)
-
-df["PL_Distance"] = ((df["Close"] / df["PowerLaw"]) - 1) * 100
+df["PowerLaw"] = 10 ** (intercept + slope * x)
 
 # ==========================================================
-# 🔥 FIX CRÍTICO (VARIÁVEIS QUE FALTAVAM NO SEU CÓDIGO)
+# SAFE NUMPY FEATURES
 # ==========================================================
-current_price = float(df["Close"].iloc[-1])
-current_powerlaw = float(df["PowerLaw"].iloc[-1])
-current_distance = float(df["PL_Distance"].iloc[-1])
-current_atr = float(df["ATR"].iloc[-1])
+close = df["Close"].to_numpy(dtype=float)
+pl = df["PowerLaw"].to_numpy(dtype=float)
+
+df["PL_Distance"] = ((close / pl) - 1.0) * 100
+
+# ==========================================================
+# CURRENT STATE
+# ==========================================================
+current_price = close[-1]
+current_pl = pl[-1]
+current_distance = df["PL_Distance"].iloc[-1]
+current_atr = df["ATR"].iloc[-1]
 
 current_percentile = percentileofscore(
-    df["PL_Distance"].dropna(),
+    df["PL_Distance"],
     current_distance
 )
 
 # ==========================================================
-# RESUMO ATUAL
+# DISPLAY METRICS
 # ==========================================================
-col1, col2, col3, col4 = st.columns(4)
+c1, c2, c3, c4 = st.columns(4)
 
-with col1:
-    st.metric("Preço BTC", f"US$ {current_price:,.2f}")
-
-with col2:
-    st.metric("Power Law", f"US$ {current_powerlaw:,.2f}")
-
-with col3:
-    st.metric("Distância", f"{current_distance:.2f}%")
-
-with col4:
-    st.metric("Percentil", f"{current_percentile:.1f}")
+c1.metric("BTC", f"${current_price:,.0f}")
+c2.metric("Power Law", f"${current_pl:,.0f}")
+c3.metric("Distance", f"{current_distance:.2f}%")
+c4.metric("Percentile", f"{current_percentile:.1f}")
 
 st.divider()
 
 # ==========================================================
-# SIMILARIDADE
+# REGIME FILTER (INSTITUTIONAL LOGIC)
 # ==========================================================
-historical = df.iloc[:-1].copy()
+def regime(distance):
 
-historical["Similarity"] = abs(
-    historical["PL_Distance"] - current_distance
-)
+    if distance < -25:
+        return "DEEP VALUE ZONE"
+    elif distance < 0:
+        return "BELOW FAIR VALUE"
+    elif distance < 25:
+        return "FAIR VALUE"
+    else:
+        return "OVEREXTENDED"
 
-sample_size = max(50, int(len(historical) * SIMILAR_PERCENT))
 
-similar_days = historical.nsmallest(sample_size, "Similarity")
+regime_state = regime(current_distance)
 
-# ==========================================================
-# GRÁFICO POWER LAW
-# ==========================================================
-fig = go.Figure()
-
-fig.add_trace(go.Scatter(
-    x=df["Date"],
-    y=df["Close"],
-    name="BTC"
-))
-
-fig.add_trace(go.Scatter(
-    x=df["Date"],
-    y=df["PowerLaw"],
-    name="Power Law"
-))
-
-fig.update_layout(height=600, yaxis_type="log")
-
-st.plotly_chart(fig, use_container_width=True)
-
-st.divider()
+st.subheader(f"Market Regime: {regime_state}")
 
 # ==========================================================
-# SIMULAÇÃO ATR
+# SIMILARITY ENGINE (VECTOR APPROACH)
 # ==========================================================
-def simulate_path(data, start_index, atr_mult, max_days=90):
+hist = df.iloc[:-1].copy()
 
-    start_price = data.iloc[start_index]["Close"]
-    atr = data.iloc[start_index]["ATR"]
+hist["sim"] = np.abs(hist["PL_Distance"] - current_distance)
 
-    if np.isnan(atr) or atr == 0:
+sample_size = max(50, int(len(hist) * SIMILARITY_SAMPLE))
+
+similar = hist.nsmallest(sample_size, "sim")
+
+# ==========================================================
+# MONTE CARLO ENGINE (REAL EDGE SIMULATION)
+# ==========================================================
+def monte_carlo(df, start_idx, atr_mult=2):
+
+    start_price = df.iloc[start_idx]["Close"]
+    atr_val = df.iloc[start_idx]["ATR"]
+
+    if atr_val <= 0:
         return None
 
-    target_up = start_price + (atr * atr_mult)
-    target_down = start_price - atr
+    win = 0
 
-    end_index = min(start_index + max_days, len(data) - 1)
+    for _ in range(MC_SIMULATIONS):
 
-    for i in range(start_index + 1, end_index):
+        price = start_price
 
-        high = data.iloc[i]["High"]
-        low = data.iloc[i]["Low"]
+        for i in range(MAX_DAYS):
 
-        if high >= target_up:
-            return {"result": "win", "days": i - start_index}
+            shock = np.random.normal(0, atr_val * 0.5)
+            price += shock
 
-        if low <= target_down:
-            return {"result": "loss", "days": i - start_index}
+            if price >= start_price + atr_val * atr_mult:
+                win += 1
+                break
 
-    return None
+            if price <= start_price - atr_val:
+                break
+
+    return win / MC_SIMULATIONS
+
 
 # ==========================================================
-# ENGINE
+# BACKTEST ENGINE
 # ==========================================================
-def run_probability_engine(similar_data, full_data):
+def engine(similar, df):
 
     results = {}
 
-    for atr_mult in [1, 2, 3, 4]:
+    for mult in [1, 2, 3, 4]:
 
-        wins = 0
-        losses = 0
-        times = []
+        probs = []
 
-        for idx in similar_data.index:
+        for idx in similar.index:
 
-            idx_full = full_data.index.get_loc(idx)
+            pos = df.index.get_loc(idx)
 
-            sim = simulate_path(full_data, idx_full, atr_mult)
+            p = monte_carlo(df, pos, mult)
 
-            if sim is None:
-                continue
+            if p is not None:
+                probs.append(p)
 
-            if sim["result"] == "win":
-                wins += 1
-            else:
-                losses += 1
-
-            times.append(sim["days"])
-
-        total = wins + losses
-
-        if total == 0:
-            results[atr_mult] = {"win_rate": 0, "ev": 0, "avg_time": 0, "samples": 0}
+        if len(probs) == 0:
             continue
 
-        win_rate = wins / total
-
-        ev = (win_rate * atr_mult) - (1 - win_rate)
-
-        results[atr_mult] = {
-            "win_rate": win_rate,
-            "ev": ev,
-            "avg_time": np.mean(times),
-            "samples": total
+        results[mult] = {
+            "prob": np.mean(probs),
+            "ev": np.mean(probs) * mult - (1 - np.mean(probs)),
+            "samples": len(probs)
         }
 
     return results
 
 
-results = run_probability_engine(similar_days, df)
+results = engine(similar, df)
 
 best = max(results.items(), key=lambda x: x[1]["ev"])
 
-st.success(f"Melhor: +{best[0]} ATR | EV {best[1]['ev']:.3f}")
+st.success(f"Best: +{best[0]} ATR | EV {best[1]['ev']:.3f}")
 
 # ==========================================================
-# SCORE
+# SCORE SYSTEM (INSTITUTIONAL)
 # ==========================================================
-ev_values = [v["ev"] for v in results.values()]
-ev_mean = np.mean(ev_values)
+ev_mean = np.mean([r["ev"] for r in results.values()])
 
 score = (
-    min(max(ev_mean * 25, 0), 100) * 0.5 +
+    min(max(ev_mean * 30, 0), 100) * 0.5 +
     max(0, 100 - abs(current_distance)) * 0.3 +
     max(0, 100 - current_percentile) * 0.2
 )
 
-st.metric("Score Final", f"{score:.1f}/100")
+st.metric("Hedge Fund Score", f"{score:.1f}/100")
 
 # ==========================================================
-# SIGNAL
+# SIGNAL ENGINE
 # ==========================================================
-if score >= 75:
-    st.success("🟢 BUY ZONE")
-elif score >= 50:
-    st.warning("🟡 NEUTRO")
+if score > 75 and ev_mean > 0:
+    st.success("🟢 INSTITUTIONAL BUY ZONE")
+elif score > 50:
+    st.warning("🟡 NEUTRAL RISK")
 else:
-    st.error("🔴 EVITAR")
+    st.error("🔴 RISK OFF")
 
 # ==========================================================
-# CHART FINAL
+# CHARTS
 # ==========================================================
-fig2 = go.Figure()
+fig = go.Figure()
 
-fig2.add_trace(go.Scatter(x=df["Date"], y=df["Close"], name="BTC"))
-fig2.add_trace(go.Scatter(x=df["Date"], y=df["PowerLaw"], name="Power Law"))
+fig.add_trace(go.Scatter(x=df["Date"], y=df["Close"], name="BTC"))
+fig.add_trace(go.Scatter(x=df["Date"], y=df["PowerLaw"], name="Power Law"))
 
-fig2.update_layout(height=600, yaxis_type="log")
+fig.update_layout(height=600, yaxis_type="log")
 
-st.plotly_chart(fig2, use_container_width=True)
+st.plotly_chart(fig, use_container_width=True)
+
+# ==========================================================
+# FINAL SUMMARY
+# ==========================================================
+st.subheader("Institutional Summary")
+
+st.write({
+    "Price": current_price,
+    "Power Law": current_pl,
+    "Distance": current_distance,
+    "Regime": regime_state,
+    "Score": score
+})
