@@ -9,10 +9,12 @@ from scipy.stats import percentileofscore
 # CONFIG
 # ==========================================================
 st.set_page_config(page_title="BTC Multi-Timeframe Engine", layout="wide")
-st.title("🏦 BTC Multi-Timeframe Institutional Engine")
+st.title("🏦 BTC Power Law + Multi-Timeframe Institutional Engine")
+
+ATR_PERIOD = 14
 
 # ==========================================================
-# DATA (DIÁRIO + 4H)
+# DATA
 # ==========================================================
 @st.cache_data(ttl=3600)
 def load_data():
@@ -52,7 +54,7 @@ if daily.empty or h4.empty:
     st.stop()
 
 # ==========================================================
-# INDICADORES
+# INDICADORES BASE
 # ==========================================================
 def ema(series, period):
     return series.ewm(span=period, adjust=False).mean()
@@ -69,114 +71,100 @@ def rsi(series, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
+# ==========================================================
+# POWER LAW
+# ==========================================================
+def power_law(df):
 
-def stochastic_rsi(rsi_series, k=3, d=3):
-    min_rsi = rsi_series.rolling(14).min()
-    max_rsi = rsi_series.rolling(14).max()
+    df = df.copy()
+    df["Date"] = pd.to_datetime(df["Date"])
 
-    stoch = (rsi_series - min_rsi) / (max_rsi - min_rsi)
-    k_line = stoch.rolling(k).mean()
-    return k_line
+    genesis = pd.Timestamp("2009-01-03")
+    df["Days"] = (df["Date"] - genesis).dt.days.astype(float)
+    df = df[df["Days"] > 0]
+
+    x = np.log10(df["Days"].to_numpy())
+    y = np.log10(df["Close"].to_numpy())
+
+    slope, intercept = np.polyfit(x, y, 1)
+    df["PowerLaw"] = 10 ** (intercept + slope * x)
+
+    df["PL_Distance"] = ((df["Close"] / df["PowerLaw"]) - 1) * 100
+
+    return df
 
 
-def adx(df, period=14):
-    high = df["High"]
-    low = df["Low"]
-    close = df["Close"]
-
-    plus_dm = high.diff()
-    minus_dm = low.diff() * -1
-
-    plus_dm = np.where((plus_dm > minus_dm) & (plus_dm > 0), plus_dm, 0.0)
-    minus_dm = np.where((minus_dm > plus_dm) & (minus_dm > 0), minus_dm, 0.0)
-
-    tr = pd.concat([
-        high - low,
-        (high - close.shift()).abs(),
-        (low - close.shift()).abs()
-    ], axis=1).max(axis=1)
-
-    atr_val = tr.rolling(period).mean()
-
-    plus_di = 100 * (pd.Series(plus_dm).rolling(period).mean() / atr_val)
-    minus_di = 100 * (pd.Series(minus_dm).rolling(period).mean() / atr_val)
-
-    dx = (abs(plus_di - minus_di) / (plus_di + minus_di)) * 100
-    return dx.rolling(period).mean(), plus_di, minus_di
-
+daily = power_law(daily)
 
 # ==========================================================
-# ================= DAILY FRAME ============================
+# DAILY INDICATORS
 # ==========================================================
 daily["EMA169"] = ema(daily["Close"], 169)
 daily["RSI"] = rsi(daily["Close"], 14)
-daily["ADX"], daily["DI+"], daily["DI-"] = adx(daily)
 
-daily = daily.dropna().reset_index(drop=True)
+daily = daily.dropna()
 
 price_d = daily["Close"].iloc[-1]
 ema_d = daily["EMA169"].iloc[-1]
-adx_d = daily["ADX"].iloc[-1]
-di_plus_d = daily["DI+"].iloc[-1]
-di_minus_d = daily["DI-"].iloc[-1]
-
-daily_trend = (
-    price_d > ema_d and
-    adx_d > 20 and
-    di_plus_d > di_minus_d
-)
+rsi_d = daily["RSI"].iloc[-1]
 
 # ==========================================================
-# ================= 4H FRAME ===============================
+# 4H INDICATORS
 # ==========================================================
 h4["RSI"] = rsi(h4["Close"], 14)
-h4["STOCH_K"] = stochastic_rsi(h4["RSI"])
-h4["VOL_MA20"] = h4["Volume"].rolling(20).mean()
+h4 = h4.dropna()
 
-h4 = h4.dropna().reset_index(drop=True)
-
-price_h = h4["Close"].iloc[-1]
 rsi_h = h4["RSI"].iloc[-1]
-stoch_h = h4["STOCH_K"].iloc[-1]
-vol_h = h4["Volume"].iloc[-1]
-vol_ma_h = h4["VOL_MA20"].iloc[-1]
-
-entry_signal = (
-    rsi_h < 40 and
-    stoch_h < 0.2 and
-    vol_h > vol_ma_h
-)
+price_h = h4["Close"].iloc[-1]
 
 # ==========================================================
-# SCORE FINAL
+# MULTI-TF LOGIC
 # ==========================================================
-trend_score = 60 if daily_trend else 0
-entry_score = 40 if entry_signal else 0
+trend_strength = price_d / ema_d
 
-score = trend_score + entry_score
+trend_score = np.clip((trend_strength - 0.95) * 200, 0, 60)
+momentum_score = np.clip((40 - rsi_h) * 0.6, 0, 25)
+alignment_score = 15 if rsi_h < 45 and rsi_d < 50 else 5
 
-# ==========================================================
-# UI
-# ==========================================================
-c1, c2, c3 = st.columns(3)
-
-c1.metric("BTC Diário", f"${price_d:,.0f}")
-c2.metric("EMA 169", f"${ema_d:,.0f}")
-c3.metric("Score", f"{score}/100")
-
-st.divider()
+score = trend_score + momentum_score + alignment_score
 
 # ==========================================================
 # SIGNAL ENGINE
 # ==========================================================
-if not daily_trend:
-    st.error("🔴 SEM TENDÊNCIA (DIÁRIO NEGATIVO)")
-
-elif not entry_signal:
-    st.warning("🟡 TENDÊNCIA OK — AGUARDAR ENTRADA (4H)")
-
+if trend_strength < 1:
+    signal = "🔴 BLOQUEADO (ABAIXO DA EMA 169)"
+elif score > 75:
+    signal = "🟢 LONG SETUP CONFIRMADO"
+elif score > 50:
+    signal = "🟡 AGUARDAR CONFIRMAÇÃO"
 else:
-    st.success("🟢 LONG SETUP CONFIRMADO (MULTI-TF)")
+    signal = "🔴 SEM TRADE"
+
+# ==========================================================
+# DISPLAY
+# ==========================================================
+c1, c2, c3 = st.columns(3)
+
+c1.metric("BTC", f"${price_d:,.0f}")
+c2.metric("EMA 169", f"${ema_d:,.0f}")
+c3.metric("Score", f"{score:.1f}/100")
+
+st.divider()
+
+st.success(signal) if "CONFIRMADO" in signal else st.warning(signal) if "AGUARDAR" in signal else st.error(signal)
+
+# ==========================================================
+# CHART (COMPLETO)
+# ==========================================================
+fig = go.Figure()
+
+fig.add_trace(go.Scatter(x=daily["Date"], y=daily["Close"], name="BTC"))
+fig.add_trace(go.Scatter(x=daily["Date"], y=daily["EMA169"], name="EMA 169"))
+fig.add_trace(go.Scatter(x=daily["Date"], y=daily["PowerLaw"], name="Power Law"))
+
+fig.update_layout(height=600, yaxis_type="log")
+
+st.plotly_chart(fig, use_container_width=True)
 
 # ==========================================================
 # SUMMARY
@@ -184,9 +172,11 @@ else:
 st.subheader("Resumo Institucional")
 
 st.write({
-    "Trend Diário": bool(daily_trend),
-    "Entry 4H": bool(entry_signal),
-    "Score": score,
+    "Preço": price_d,
+    "EMA169": ema_d,
+    "RSI Diário": rsi_d,
     "RSI 4H": rsi_h,
-    "Stoch 4H": stoch_h
+    "Score": score,
+    "Trend Strength": trend_strength,
+    "Signal": signal
 })
